@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AC Thun</title>
+<meta name="theme-color" content="#2E3192">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="AC Thun">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<style>
+:root{
+  --navy:#2E3192; --navy-d:#1f2270; --gold:#9A7A41; --gold-l:#c4a76a;
+  --bg:#f4f3ef; --card:#fff; --ink:#1d1d24; --muted:#6b6b76; --line:#e4e2da;
+  --ok:#2f7d4f; --ok-bg:#e5f3ea; --no:#a63a3a; --no-bg:#f8e7e7; --warn-bg:#fbf3e2;
+  --r:14px; --sh:0 1px 2px rgba(0,0,0,.05),0 2px 10px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#121318; --card:#1c1d24; --ink:#ecebf2; --muted:#9a99a6; --line:#2c2d36;
+  --ok-bg:#1d3326; --no-bg:#3a2020; --warn-bg:#352d1c; --navy:#6f73e0; --gold:#c4a76a;
+}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-text-size-adjust:100%}
+a{color:var(--navy)}
+header.top{position:sticky;top:0;z-index:10;background:#2E3192;color:#fff;padding:calc(env(safe-area-inset-top) + 10px) 16px 10px;display:flex;align-items:center;gap:10px}
+header.top img{width:34px;height:34px;border-radius:50%;background:#fff}
+header.top .t{font-weight:650;letter-spacing:.2px}
+header.top .s{font-size:12px;opacity:.75}
+header.top .back{color:#fff;text-decoration:none;font-size:22px;margin-right:2px;display:none}
+main{max-width:760px;margin:0 auto;padding:16px 16px calc(90px + env(safe-area-inset-bottom))}
+nav.tabs{position:fixed;bottom:0;left:0;right:0;z-index:10;background:var(--card);border-top:1px solid var(--line);display:flex;padding-bottom:env(safe-area-inset-bottom)}
+nav.tabs a{flex:1;text-align:center;padding:8px 2px 7px;font-size:11px;color:var(--muted);text-decoration:none}
+nav.tabs a svg{display:block;margin:0 auto 2px;width:23px;height:23px}
+nav.tabs a.on{color:var(--navy);font-weight:600}
+h1{font-size:22px;margin:4px 0 14px}
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.6px;color:var(--gold);margin:22px 0 8px}
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);padding:14px;margin-bottom:10px}
+.list{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden;margin-bottom:12px}
+.row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line);text-decoration:none;color:inherit}
+.row:last-child{border-bottom:0}
+.row .grow{flex:1;min-width:0}
+.row .sub{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.av{width:40px;height:40px;border-radius:50%;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex:none}
+.av.gold{background:var(--gold)}
+.muted{color:var(--muted)} .small{font-size:13px}
+.chip{display:inline-block;font-size:12px;padding:2px 9px;border-radius:99px;background:var(--line);color:var(--ink);white-space:nowrap}
+.chip.ok{background:var(--ok-bg);color:var(--ok)} .chip.no{background:var(--no-bg);color:var(--no)} .chip.gold{background:var(--warn-bg);color:var(--gold)}
+.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font:inherit;font-weight:600;cursor:pointer;background:var(--line);color:var(--ink);text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.btn.p{background:#2E3192;color:#fff} .btn.ok{background:var(--ok);color:#fff} .btn.no{background:var(--no);color:#fff}
+.btn.ghost{background:transparent;border:1px solid var(--line)}
+.btn.sm{padding:6px 10px;font-size:14px;border-radius:8px}
+.btn.block{width:100%}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btns .btn{flex:1}
+input,select,textarea{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+textarea{min-height:90px}
+label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+.check{display:flex;align-items:center;gap:8px;margin:10px 0;color:var(--ink);font-size:15px}
+.check input{width:auto}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+.date{width:52px;text-align:center;flex:none}
+.date .d{font-size:22px;font-weight:700;line-height:1;color:var(--navy)}
+.date .m{font-size:11px;text-transform:uppercase;color:var(--muted)}
+.ev.cancel .grow b{text-decoration:line-through}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:6px 10px;font-size:15px}
+.kv dt{color:var(--muted)} .kv dd{margin:0;word-break:break-word}
+.search{position:sticky;top:64px;z-index:5;margin-bottom:10px}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;z-index:50;opacity:0;transition:.2s;pointer-events:none}
+.toast.on{opacity:.95}
+.login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.login .box{max-width:380px;width:100%;text-align:center}
+.login img{width:110px;height:110px;margin-bottom:10px}
+.code{font-family:ui-monospace,Consolas,monospace;letter-spacing:2px;text-transform:uppercase;text-align:center;font-size:20px}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:13px;word-break:break-all}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+.seg{display:flex;background:var(--line);border-radius:10px;padding:3px;margin-bottom:12px}
+.seg a{flex:1;text-align:center;padding:7px;border-radius:8px;text-decoration:none;color:var(--ink);font-size:14px}
+.seg a.on{background:var(--card);box-shadow:var(--sh);font-weight:600}
+.empty{text-align:center;color:var(--muted);padding:30px 10px}
+.hero{background:linear-gradient(135deg,#2E3192,#1f2270);color:#fff;border-radius:var(--r);padding:16px;margin-bottom:14px}
+.hero .chip{background:rgba(255,255,255,.18);color:#fff}
+details summary{cursor:pointer;list-style:none}
+details summary::-webkit-details-marker{display:none}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="toast" id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
