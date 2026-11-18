@@ -154,6 +154,9 @@ async function start() {
     await sb.auth.signOut();
     return renderLogin('Für dieses Login ist kein aktives Mitglied hinterlegt. Bitte den persönlichen Code verwenden oder beim Vorstand melden.');
   }
+  if (!new URLSearchParams(location.search).get('code')) {
+    try { const s = await mySecret(); if (s?.login_code) rememberCode(s.login_code); } catch { /* */ }
+  }
   route();
 }
 
