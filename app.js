@@ -1,19 +1,20 @@
-/* Ambassador Club Thun – App (MVP) */
+/* Ambassador Club Thun – App (v1.1) */
 'use strict';
 const CFG = window.AC_CONFIG;
 const sb = supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
 const $app = document.getElementById('app');
-const S = { me: null, admin: false, members: [], byId: {}, roles: [], showPast: false, vorstandTab: 'aktuell', installEvt: null };
+const S = { me: null, admin: false, members: [], byId: {}, roles: [], showPast: false, vorstandTab: 'aktuell', installEvt: null, filter: 'alle' };
+try { S.filter = localStorage.getItem('ac_filter') || 'alle'; } catch { /* */ }
 const TZ = 'Europe/Zurich';
 const KINDS = ['Lunch', 'Nachtessen', 'Anlass', 'Ausflug', 'Generalversammlung', 'Vorstand', 'Andere'];
-const DEFAULT_LOC = 'Hotel Krone, Rathausplatz, 3600 Thun';
+const DEFAULT_LOC = 'Restaurant Krone, Thun';
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
 
 /* ---------- helpers ---------- */
 const h = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const appBase = () => CFG.appUrl || (location.origin + location.pathname);
-const fullName = (m) => m ? [m.titel, m.vorname, m.nachname].filter(Boolean).join(' ') : '–';
-const sortName = (a, b) => (a.nachname + a.vorname).localeCompare(b.nachname + b.vorname, 'de');
+const fullName = (m) => m ? [m.vorname, m.nachname].filter(Boolean).join(' ') : '–';
+const sortName = (a, b) => ((a.nachname || '') + (a.vorname || '')).localeCompare((b.nachname || '') + (b.vorname || ''), 'de');
 const initials = (m) => ((m.vorname || '')[0] || '') + ((m.nachname || '')[0] || '');
 const fmt = (iso, o) => new Date(iso).toLocaleString('de-CH', { timeZone: TZ, ...o });
 const fDate = (iso) => fmt(iso, { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' });
@@ -30,6 +31,12 @@ async function q(p) { const { data, error } = await p; if (error) throw error; r
 async function copy(text) { try { await navigator.clipboard.writeText(text); toast('Kopiert'); } catch { prompt('Kopieren:', text); } }
 function download(name, text, type) { const b = new Blob([text], { type }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
 const csv = (rows) => '﻿' + rows.map((r) => r.map((c) => '"' + String(c ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
+
+/* Kategorie eines Anlasses: über Titel-Präfix */
+const CAT = { club: 'AC Thun', regio: 'Regio', nat: 'National / Int.' };
+const catOf = (e) => /^Regio:/i.test(e.title) ? 'regio' : /^(National|International):/i.test(e.title) ? 'nat' : 'club';
+const catLabel = (e) => /^International:/i.test(e.title) ? 'International' : /^National:/i.test(e.title) ? 'National' : /^Regio:/i.test(e.title) ? 'Regio' : '';
+const evTitle = (e) => e.title.replace(/^(Regio|National|International):\s*/i, '');
 
 const ICON = {
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
@@ -160,14 +167,18 @@ window.addEventListener('hashchange', route);
 async function viewProgramm() {
   shell('Jahresprogramm', '', { tab: 'programm' }); loading();
   const since = S.showPast ? new Date(Date.now() - 400 * 864e5).toISOString() : new Date(Date.now() - 6 * 3600e3).toISOString();
-  const events = await q(sb.from('events').select('*').gte('starts_at', since).order('starts_at', { ascending: !S.showPast }));
+  const all = await q(sb.from('events').select('*').gte('starts_at', since).order('starts_at', { ascending: !S.showPast }));
+  if (S.showPast) all.splice(0, all.length, ...all.filter((e) => new Date(e.starts_at) < new Date()));
+  const events = S.filter === 'alle' ? all : all.filter((e) => catOf(e) === S.filter);
   const ids = events.map((e) => e.id);
   const regs = ids.length ? await q(sb.from('registrations').select('event_id,member_id,status,with_partner,guests').in('event_id', ids)) : [];
   const byEv = {};
   regs.forEach((r) => (byEv[r.event_id] ||= []).push(r));
-  let html = `<div class="seg"><a href="#" data-past="0" class="${S.showPast ? '' : 'on'}">Kommende</a><a href="#" data-past="1" class="${S.showPast ? 'on' : ''}">Vergangene</a></div>`;
+  const cnt = (c) => all.filter((e) => c === 'alle' || catOf(e) === c).length;
+  let html = `<div class="seg"><a href="#" data-past="0" class="${S.showPast ? '' : 'on'}">Kommende</a><a href="#" data-past="1" class="${S.showPast ? 'on' : ''}">Vergangene</a></div>
+    <div class="filt">${[['alle', 'Alle'], ['club', CAT.club], ['regio', CAT.regio], ['nat', CAT.nat]].map(([k, l]) => `<a href="#" data-f="${k}" class="${S.filter === k ? 'on' : ''}">${l} <span>${cnt(k)}</span></a>`).join('')}</div>`;
   if (S.admin) html += `<div class="btns" style="margin-bottom:12px"><a class="btn sm ghost" href="#/admin/event/neu">+ Anlass</a><a class="btn sm ghost" href="#/admin/serie">+ Clubabend-Serie</a></div>`;
-  if (!events.length) html += `<div class="empty">Keine ${S.showPast ? 'vergangenen' : 'kommenden'} Anlässe erfasst.</div>`;
+  if (!events.length) html += `<div class="empty">Keine ${S.showPast ? 'vergangenen' : 'kommenden'} Anlässe in dieser Auswahl.</div>`;
   let lastMonth = '';
   for (const e of events) {
     const mon = fmt(e.starts_at, { month: 'long', year: 'numeric' });
@@ -178,19 +189,21 @@ async function viewProgramm() {
     const persons = an.reduce((s, r) => s + 1 + (r.with_partner ? 1 : 0) + (r.guests || 0), 0);
     const past = new Date(e.starts_at) < new Date();
     const closed = past || e.cancelled || (e.reg_deadline && new Date(e.reg_deadline) < new Date());
-    html += `<div class="card ev ${e.cancelled ? 'cancel' : ''}" style="padding:0">
+    const ext = catOf(e) !== 'club';
+    html += `<div class="card ev ${e.cancelled ? 'cancel' : ''} ${ext ? 'ext' : ''}" style="padding:0">
       <a class="row" href="#/event/${e.id}" style="border:0">
         <div class="date"><div class="d">${fmt(e.starts_at, { day: 'numeric' })}</div><div class="m">${fmt(e.starts_at, { weekday: 'short' })}</div></div>
-        <div class="grow"><b>${h(e.title)}</b><div class="sub">${fTime(e.starts_at)} · ${h(e.kind)}${e.location ? ' · ' + h(e.location) : ''}</div>
-          <div style="margin-top:5px">${e.cancelled ? '<span class="chip no">abgesagt</span> ' : ''}${statusChip(mine)} <span class="chip">${persons} Pers.</span></div></div>
+        <div class="grow"><b>${h(evTitle(e))}</b><div class="sub">${fTime(e.starts_at)} · ${h(e.kind)}${e.location ? ' · ' + h(e.location) : ''}</div>
+          <div style="margin-top:5px">${ext ? `<span class="chip blue">${catLabel(e)}</span> ` : ''}${e.cancelled ? '<span class="chip no">abgesagt</span> ' : ''}${statusChip(mine)} <span class="chip">${persons} Pers.</span></div></div>
       </a>
       ${closed ? '' : `<div class="btns" style="padding:0 14px 12px">
-        <button class="btn sm ${mine?.status === 'an' ? 'ok' : 'ghost'}" data-reg="${e.id}" data-st="an">✓ Anmelden</button>
-        <button class="btn sm ${mine?.status === 'ab' ? 'no' : 'ghost'}" data-reg="${e.id}" data-st="ab">✗ Abmelden</button></div>`}
+        <button class="btn sm ${mine?.status === 'an' ? 'ok' : 'ghost'}" data-reg="${e.id}" data-st="an">✓ ${ext ? 'Ich gehe' : 'Anmelden'}</button>
+        <button class="btn sm ${mine?.status === 'ab' ? 'no' : 'ghost'}" data-reg="${e.id}" data-st="ab">✗ ${ext ? 'Nicht dabei' : 'Abmelden'}</button></div>`}
     </div>`;
   }
   $app.querySelector('main').innerHTML = html;
   $app.querySelectorAll('[data-past]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); S.showPast = a.dataset.past === '1'; viewProgramm(); });
+  $app.querySelectorAll('[data-f]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); S.filter = a.dataset.f; try { localStorage.setItem('ac_filter', S.filter); } catch { /* */ } viewProgramm(); });
   $app.querySelectorAll('[data-reg]').forEach((b) => b.onclick = async () => {
     try { await setReg(b.dataset.reg, S.me.id, { status: b.dataset.st }); toast(b.dataset.st === 'an' ? 'Angemeldet' : 'Abgemeldet'); viewProgramm(); } catch (e) { err(e); }
   });
@@ -216,15 +229,17 @@ async function viewEvent(id) {
   const past = new Date(e.starts_at) < new Date();
   const closed = past || e.cancelled || (e.reg_deadline && new Date(e.reg_deadline) < new Date());
   const full = e.max_participants && persons >= e.max_participants && mine?.status !== 'an';
+  const ext = catOf(e) !== 'club';
   const nm = (r) => S.byId[r.member_id] ? fullName(S.byId[r.member_id]) : '?';
   let html = `<div class="hero">
-      <div class="small" style="opacity:.8">${h(e.kind)}</div>
-      <div style="font-size:21px;font-weight:700;margin:2px 0 6px">${h(e.title)}</div>
+      <div class="small" style="opacity:.8">${ext ? catLabel(e) + ' · ' : ''}${h(e.kind)}</div>
+      <div style="font-size:21px;font-weight:700;margin:2px 0 6px">${h(evTitle(e))}</div>
       <div>${fDate(e.starts_at)}, ${fTime(e.starts_at)}${e.ends_at ? '–' + fTime(e.ends_at) : ''} Uhr</div>
       ${e.location ? `<div><a style="color:#fff" target="_blank" rel="noopener" href="https://maps.google.com/?q=${encodeURIComponent(e.location)}">${h(e.location)}</a></div>` : ''}
       <div style="margin-top:8px">${e.cancelled ? '<span class="chip">ABGESAGT</span> ' : ''}<span class="chip">${persons} Personen angemeldet${e.max_participants ? ' / max. ' + e.max_participants : ''}</span>
       ${e.reg_deadline ? ` <span class="chip">Anmeldeschluss ${fmt(e.reg_deadline, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>` : ''}</div>
     </div>`;
+  if (S.admin && !ext) html += `<a class="btn p block" href="factsheet.html?e=${e.id}" style="margin-bottom:10px">📋 Factsheet Präsident</a>`;
   if (e.description) html += `<div class="card" style="white-space:pre-wrap">${h(e.description)}</div>`;
   html += `<div class="card"><b>Meine Anmeldung</b> ${statusChip(mine)}`;
   if (closed) html += `<p class="muted small">${e.cancelled ? 'Der Anlass ist abgesagt.' : 'Die Anmeldung ist geschlossen.'}</p>`;
@@ -259,7 +274,7 @@ async function viewEvent(id) {
       const rows = [['Name', 'Status', 'Partner', 'Gäste', 'Bemerkung']];
       regs.forEach((r) => rows.push([nm(r), r.status === 'an' ? 'angemeldet' : 'abgemeldet', r.with_partner ? 'ja' : '', r.guests || '', r.comment || '']));
       open.forEach((m) => rows.push([fullName(m), 'offen', '', '', '']));
-      download(`Anmeldungen_${e.starts_at.slice(0, 10)}_${e.title.replace(/\W+/g, '_')}.csv`, csv(rows), 'text/csv');
+      download(`Anmeldungen_${e.starts_at.slice(0, 10)}_${evTitle(e).replace(/\W+/g, '_')}.csv`, csv(rows), 'text/csv');
     };
     $app.querySelectorAll('[data-adm]').forEach((s) => s.onchange = async () => {
       try {
@@ -318,7 +333,7 @@ async function viewMember(id) {
 }
 function vcard(m) {
   const e = (s) => String(s || '').replace(/([,;\\])/g, '\\$1');
-  return ['BEGIN:VCARD', 'VERSION:3.0', `N:${e(m.nachname)};${e(m.vorname)};;${e(m.titel)};`, `FN:${e(fullName(m))}`,
+  return ['BEGIN:VCARD', 'VERSION:3.0', `N:${e(m.nachname)};${e(m.vorname)};;;`, `FN:${e(fullName(m))}`,
     m.firma ? `ORG:${e(m.firma)}` : '', m.beruf ? `TITLE:${e(m.beruf)}` : '',
     m.mobile ? `TEL;TYPE=CELL:${m.mobile}` : '', m.tel ? `TEL;TYPE=HOME:${m.tel}` : '', m.email ? `EMAIL:${m.email}` : '',
     (m.strasse || m.ort) ? `ADR;TYPE=HOME:;;${e(m.strasse)};${e(m.ort)};;${e(m.plz)};${e(m.land)}` : '',
@@ -383,7 +398,7 @@ function viewMore() {
     <div class="list">${r('#/profil', 'Mein Profil', 'Adresse, Telefon, Geburtstag')}${r('#/kalender', 'Kalender abonnieren', 'Jahresprogramm im eigenen Kalender')}${r('#/link', 'Mein persönlicher Login-Link', 'für weitere Geräte')}${r('#/installieren', 'App auf Startbildschirm', 'iPhone & Android')}</div>
     <h2>Demnächst</h2>
     <div class="list">${r('#/bald/shop', 'Shop', 'Pins, Aufkleber, AC-Gürtel')}${r('#/bald/dokumente', 'Dokumente', 'Statuten, Protokolle, Downloads')}${r('#/bald/mitteilungen', 'Mitteilungen', 'E-Mail & Push an Mitglieder')}</div>
-    ${S.admin ? `<h2>Verwaltung</h2><div class="list">${r('#/admin', 'Admin-Bereich', 'Mitglieder, Codes, Programm, Vorstand')}</div>` : ''}
+    ${S.admin ? `<h2>Verwaltung</h2><div class="list">${r('factsheet.html', 'Factsheet Präsident', 'nächster Clubanlass')}${r('#/admin', 'Admin-Bereich', 'Mitglieder, Codes, Programm, Vorstand')}</div>` : ''}
     <button class="btn ghost block" id="logout" style="margin-top:10px">Abmelden</button>`, { tab: 'mehr' });
   document.getElementById('logout').onclick = async () => { await sb.auth.signOut(); S.me = null; renderLogin(); };
 }
@@ -392,7 +407,7 @@ function viewSoon(what) {
   shell(t, `<div class="empty">Dieses Modul folgt in Version 2.</div>`, { tab: 'mehr', back: true });
 }
 
-const PROFILE_FIELDS = [['anrede', 'Anrede'], ['titel', 'Titel'], ['vorname', 'Vorname'], ['nachname', 'Nachname'], ['strasse', 'Strasse'], ['plz', 'PLZ'], ['ort', 'Ort'], ['land', 'Land'],
+const PROFILE_FIELDS = [['anrede', 'Anrede'], ['vorname', 'Vorname'], ['nachname', 'Nachname'], ['strasse', 'Strasse'], ['plz', 'PLZ'], ['ort', 'Ort'], ['land', 'Land'],
   ['email', 'E-Mail', 'email'], ['mobile', 'Mobile', 'tel'], ['tel', 'Telefon', 'tel'], ['geburtsdatum', 'Geburtsdatum', 'date'], ['beruf', 'Beruf'], ['firma', 'Firma'],
   ['partner_vorname', 'Partner/in Vorname'], ['partner_nachname', 'Partner/in Nachname'], ['hobbies', 'Interessen']];
 const ADMIN_FIELDS = [['member_no', 'Mitglied-Nr.'], ['eintritt', 'Eintritt', 'date']];
@@ -445,11 +460,12 @@ window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.in
 function viewAdmin() {
   const r = (href, t, s) => `<a class="row" href="${href}"><div class="grow"><b>${t}</b><div class="sub">${s}</div></div><span class="muted">›</span></a>`;
   shell('Admin', `<div class="list">
+    ${r('factsheet.html', 'Factsheet Präsident', 'Teilnehmer, Abmeldungen, Geburtstage – druckbar')}
     ${r('#/admin/mitglieder', 'Mitglieder verwalten', 'erfassen, bearbeiten, Admin-Rechte')}
     ${r('#/admin/codes', 'Persönliche Codes & Links', 'versenden, neu erzeugen, CSV')}
     ${r('#/admin/import', 'Excel-Import', 'Export von ambassadorclub.net einlesen')}
     ${r('#/admin/event/neu', 'Anlass erfassen', 'einzelner Termin')}
-    ${r('#/admin/serie', 'Clubabend-Serie', '1. Mi Lunch, 3. Mi Nachtessen')}
+    ${r('#/admin/serie', 'Clubabend-Serie', '1. Mi Lunch, 3. Mi Monatsanlass')}
     ${r('#/admin/vorstand', 'Vorstand bearbeiten', 'Ämter & Geschichte')}</div>`, { tab: 'mehr', back: true });
 }
 
@@ -512,10 +528,13 @@ async function viewAdminCodes() {
 
 async function viewAdminEvent(id) {
   const isNew = id === 'neu';
-  const e = isNew ? { kind: 'Anlass', location: DEFAULT_LOC, allow_partner: true } : await q(sb.from('events').select('*').eq('id', id).single());
+  const e = isNew ? { kind: 'Anlass', location: DEFAULT_LOC, allow_partner: true, title: '' } : await q(sb.from('events').select('*').eq('id', id).single());
+  const cat = catOf(e);
+  const kinds = KINDS.includes(e.kind) ? KINDS : [e.kind, ...KINDS];
   shell(isNew ? 'Neuer Anlass' : 'Anlass bearbeiten', `<div class="card">
-    <label>Titel</label><input id="title" value="${h(e.title || '')}">
-    <div class="grid2"><div><label>Art</label><select id="kind">${KINDS.map((k) => `<option ${k === e.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
+    <label>Veranstalter</label><select id="cat"><option value="club" ${cat === 'club' ? 'selected' : ''}>AC Thun</option><option value="Regio" ${cat === 'regio' ? 'selected' : ''}>Regio (anderer Club)</option><option value="National" ${/^National:/i.test(e.title) ? 'selected' : ''}>National (CHAC)</option><option value="International" ${/^International:/i.test(e.title) ? 'selected' : ''}>International (IAC)</option></select>
+    <label>Titel</label><input id="title" value="${h(evTitle(e))}">
+    <div class="grid2"><div><label>Art</label><select id="kind">${kinds.map((k) => `<option ${k === e.kind ? 'selected' : ''}>${h(k)}</option>`).join('')}</select></div>
       <div><label>Max. Personen</label><input id="max" type="number" min="0" value="${e.max_participants || ''}"></div>
       <div><label>Beginn</label><input id="start" type="datetime-local" value="${toLocalInput(e.starts_at)}"></div>
       <div><label>Ende</label><input id="end" type="datetime-local" value="${toLocalInput(e.ends_at)}"></div>
@@ -526,8 +545,11 @@ async function viewAdminEvent(id) {
     <label class="check"><input type="checkbox" id="canc" ${e.cancelled ? 'checked' : ''}> Abgesagt</label>
     <button class="btn p block" id="save">Speichern</button>
     ${isNew ? '' : '<button class="btn ghost block" id="dup" style="margin-top:8px">Duplizieren</button><button class="btn ghost block" id="del" style="margin-top:8px;color:var(--no)">Löschen</button>'}</div>`, { tab: 'programm', back: true });
-  const read = () => ({ title: val('title'), kind: val('kind'), max_participants: val('max') ? +val('max') : null, starts_at: fromLocalInput(val('start')), ends_at: fromLocalInput(val('end')),
-    reg_deadline: fromLocalInput(val('dl')), location: val('loc'), description: val('desc'), allow_partner: val('partner'), cancelled: val('canc') });
+  const read = () => {
+    const c = val('cat'); const t = val('title');
+    return { title: t ? (c === 'club' ? t : `${c}: ${t}`) : null, kind: val('kind'), max_participants: val('max') ? +val('max') : null, starts_at: fromLocalInput(val('start')), ends_at: fromLocalInput(val('end')),
+      reg_deadline: fromLocalInput(val('dl')), location: val('loc'), description: val('desc'), allow_partner: val('partner'), cancelled: val('canc') };
+  };
   document.getElementById('save').onclick = async () => {
     const d = read(); if (!d.title || !d.starts_at) return toast('Titel und Beginn nötig');
     try { const r = isNew ? await q(sb.from('events').insert(d).select().single()) : await q(sb.from('events').update(d).eq('id', id).select().single()); toast('Gespeichert'); location.hash = '#/event/' + r.id; } catch (x) { err(x); }
@@ -542,13 +564,13 @@ function nthWeekday(year, month, weekday, n) { const d = new Date(year, month, 1
 function viewAdminSeries() {
   const y = new Date().getFullYear() + (new Date().getMonth() >= 9 ? 1 : 0);
   shell('Clubabend-Serie', `<div class="card">
-    <p class="small muted">Erzeugt die regulären Clubtage gemäss Clubordnung. Bereits vorhandene Termine (gleicher Titel, gleicher Tag) werden übersprungen.</p>
+    <p class="small muted">Erzeugt die regulären Clubtage. Bereits vorhandene Termine am gleichen Tag mit gleicher Art werden übersprungen. Der Monatsname wird automatisch an den Titel angehängt (z.B. «Monatslunch März 2027»).</p>
     <label>Jahr</label><input id="yr" type="number" value="${y}">
     <label class="check"><input type="checkbox" id="lunch" checked> 1. Mittwoch: Lunch</label>
-    <div class="grid2"><div><label>Lunch Beginn</label><input id="lt" type="time" value="12:00"></div><div><label>Titel</label><input id="ln" value="Clublunch"></div></div>
-    <label class="check"><input type="checkbox" id="dinner" checked> 3. Mittwoch: Nachtessen &amp; Anlass</label>
-    <div class="grid2"><div><label>Nachtessen Beginn</label><input id="dt" type="time" value="18:30"></div><div><label>Titel</label><input id="dn" value="Clubabend"></div></div>
-    <label>Monate</label><div class="grid2">${MONTHS.map((m, i) => `<label class="check" style="margin:2px 0"><input type="checkbox" class="mon" value="${i}" ${i === 6 || i === 7 ? '' : 'checked'}> ${m}</label>`).join('')}</div>
+    <div class="grid2"><div><label>Lunch Beginn</label><input id="lt" type="time" value="11:45"></div><div><label>Titel</label><input id="ln" value="Monatslunch"></div></div>
+    <label class="check"><input type="checkbox" id="dinner"> 3. Mittwoch: Monatsanlass</label>
+    <div class="grid2"><div><label>Beginn</label><input id="dt" type="time" value="18:30"></div><div><label>Titel</label><input id="dn" value="Monatsanlass"></div></div>
+    <label>Monate</label><div class="grid2">${MONTHS.map((m, i) => `<label class="check" style="margin:2px 0"><input type="checkbox" class="mon" value="${i}" checked> ${m}</label>`).join('')}</div>
     <label>Anmeldeschluss (Tage vorher, 0 = keiner)</label><input id="dl" type="number" min="0" value="2">
     <label>Ort</label><input id="loc" value="${h(DEFAULT_LOC)}">
     <button class="btn p block" id="go" style="margin-top:12px">Termine erzeugen</button></div>`, { tab: 'programm', back: true });
@@ -556,16 +578,16 @@ function viewAdminSeries() {
     const yr = +val('yr'); const months = [...document.querySelectorAll('.mon:checked')].map((c) => +c.value);
     const mk = (date, time, title, kind) => { const [hh, mm] = time.split(':').map(Number); const s = new Date(date); s.setHours(hh, mm, 0, 0);
       const dl = +val('dl'); const d = dl ? new Date(s.getTime() - dl * 864e5) : null; if (d) d.setHours(12, 0, 0, 0);
-      return { title, kind, starts_at: s.toISOString(), ends_at: new Date(s.getTime() + (kind === 'Lunch' ? 2 : 3.5) * 3600e3).toISOString(), reg_deadline: d ? d.toISOString() : null, location: val('loc'), allow_partner: kind !== 'Lunch' }; };
+      return { title: `${title} ${MONTHS[s.getMonth()]} ${s.getFullYear()}`, kind, starts_at: s.toISOString(), ends_at: new Date(s.getTime() + (kind === 'Lunch' ? 2 : 3.5) * 3600e3).toISOString(), reg_deadline: d ? d.toISOString() : null, location: val('loc'), allow_partner: kind !== 'Lunch' }; };
     const rows = [];
     months.forEach((mo) => {
       if (val('lunch')) rows.push(mk(nthWeekday(yr, mo, 3, 1), val('lt'), val('ln'), 'Lunch'));
-      if (val('dinner')) rows.push(mk(nthWeekday(yr, mo, 3, 3), val('dt'), val('dn'), 'Nachtessen'));
+      if (val('dinner')) rows.push(mk(nthWeekday(yr, mo, 3, 3), val('dt'), val('dn'), 'Anlass'));
     });
     try {
-      const ex = await q(sb.from('events').select('title,starts_at').gte('starts_at', `${yr}-01-01`).lte('starts_at', `${yr}-12-31T23:59`));
-      const key = (e) => e.title + '|' + new Date(e.starts_at).toDateString();
-      const have = new Set(ex.map(key)); const neu = rows.filter((r) => !have.has(key(r)));
+      const ex = await q(sb.from('events').select('title,kind,starts_at').gte('starts_at', `${yr}-01-01`).lte('starts_at', `${yr}-12-31T23:59`));
+      const key = (e) => e.kind + '|' + new Date(e.starts_at).toDateString();
+      const have = new Set(ex.filter((e) => catOf(e) === 'club').map(key)); const neu = rows.filter((r) => !have.has(key(r)));
       if (!neu.length) return toast('Alle Termine bereits vorhanden');
       if (!confirm(`${neu.length} Termine anlegen?`)) return;
       await q(sb.from('events').insert(neu)); toast(neu.length + ' Termine angelegt'); location.hash = '#/programm';
@@ -600,7 +622,7 @@ function viewAdminImport() {
       const head = rows[0].map((x) => String(x).trim());
       const idx = (name, from = 0) => head.indexOf(name, from);
       const pIdx = idx('Familienname Partnerin / Partner');
-      const col = { member_no: idx('memberID'), nachname: idx('Familienname'), vorname: idx('Vorname'), anrede: idx('Anrede'), titel: idx('Akadem. Titel'), strasse: idx('Strasse'),
+      const col = { member_no: idx('memberID'), nachname: idx('Familienname'), vorname: idx('Vorname'), anrede: idx('Anrede'), strasse: idx('Strasse'),
         land: idx('Landeskennziffer'), plz: idx('Postleitzahl'), ort: idx('Ort'), email: idx('E-Mail'), tel: idx('P-Tel'), mobile: idx('P-Mobile'), eintritt: idx('Eintrittsdatum'),
         beruf: idx('Beruf'), firma: idx('Arbeitsgeber/Firma'), geburtsdatum: idx('Geburtsdatum'), partner_nachname: pIdx, partner_vorname: pIdx >= 0 ? idx('Vorname Partnerin / Partner') : -1,
         hobbies: idx('Hobby / Interessen'), ehrenmitglied: idx('Ehrenmitglied') };
@@ -676,6 +698,18 @@ async function viewAdminTerm(id) {
   const del = document.getElementById('del');
   if (del) del.onclick = async () => { if (!confirm('Eintrag löschen?')) return; try { await q(sb.from('board_terms').delete().eq('id', id)); location.hash = '#/admin/vorstand'; } catch (e) { err(e); } };
 }
+
+/* ---------- Styles für Filter (ergänzt index.html) ---------- */
+(() => {
+  const st = document.createElement('style');
+  st.textContent = `.filt{display:flex;gap:6px;overflow-x:auto;margin:-4px 0 12px;padding-bottom:2px}
+  .filt a{flex:none;padding:6px 12px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--ink);text-decoration:none;font-size:14px}
+  .filt a span{color:var(--muted);font-size:12px;margin-left:2px}
+  .filt a.on{background:#2E3192;border-color:#2E3192;color:#fff}.filt a.on span{color:#cfd0f5}
+  .chip.blue{background:#e6e7f7;color:#2E3192}
+  .card.ev.ext{border-left:4px solid var(--gold-l,#c4a76a)}`;
+  document.head.appendChild(st);
+})();
 
 /* ---------- boot ---------- */
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

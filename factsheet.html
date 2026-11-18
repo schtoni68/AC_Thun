@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factsheet Präsident – AC Thun</title>
+<link rel="icon" href="icons/icon-192.png">
+<style>
+:root{--navy:#2E3192;--gold:#9A7A41;--ink:#1d1d24;--muted:#6b6b76;--line:#e4e2da;--bg:#f4f3ef;--ok:#2f7d4f;--ok-bg:#e5f3ea;--no:#a63a3a;--no-bg:#f8e7e7;--warn:#fbf3e2}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.bar{position:sticky;top:0;background:var(--navy);color:#fff;padding:10px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;z-index:5}
+.bar select{flex:1;min-width:200px;padding:8px;border-radius:8px;border:0;font:inherit}
+.bar button,.bar a{background:#fff;color:var(--navy);border:0;border-radius:8px;padding:8px 12px;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}
+.page{max-width:820px;margin:16px auto;background:#fff;padding:28px 32px;box-shadow:0 2px 12px rgba(0,0,0,.06);border-radius:12px}
+.head{display:flex;gap:16px;align-items:center;border-bottom:3px solid var(--gold);padding-bottom:14px;margin-bottom:16px}
+.head img{width:64px;height:64px}
+.head .k{font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--gold);font-weight:700}
+.head h1{margin:2px 0 4px;font-size:24px;color:var(--navy)}
+.head .m{color:var(--muted)}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0 6px}
+.kpi{border:1px solid var(--line);border-radius:10px;padding:10px 6px;text-align:center}
+.kpi b{display:block;font-size:26px;line-height:1.1;color:var(--navy)}
+.kpi span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.kpi.main{background:var(--navy);border-color:var(--navy)} .kpi.main b,.kpi.main span{color:#fff}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--gold);margin:22px 0 6px;border-bottom:1px solid var(--line);padding-bottom:4px}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px}
+th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;background:var(--warn);color:var(--gold);margin-left:4px;white-space:nowrap}
+.chip.ok{background:var(--ok-bg);color:var(--ok)} .chip.no{background:var(--no-bg);color:var(--no)}
+.muted{color:var(--muted)} .small{font-size:13px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
+.notes{border:1px solid var(--line);border-radius:10px;height:150px;background:repeating-linear-gradient(transparent 0 27px,var(--line) 27px 28px)}
+.msg{max-width:520px;margin:60px auto;text-align:center;background:#fff;padding:28px;border-radius:12px}
+.foot{margin-top:18px;font-size:11px;color:var(--muted);text-align:right}
+@media (max-width:640px){.page{padding:18px 16px;margin:0;border-radius:0}.kpis{grid-template-columns:repeat(3,1fr)}.grid{grid-template-columns:1fr}}
+@media print{@page{size:A4;margin:12mm}body{background:#fff;font-size:12px}.bar{display:none}.page{box-shadow:none;margin:0;padding:0;max-width:none}
+ h2{break-after:avoid}tr{break-inside:avoid}th,td{font-size:12px;padding:3px 5px}.kpi b{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="bar"><select id="sel"></select><button onclick="window.print()">Drucken / PDF</button><a href="./#/programm">Zur App</a></div>
+<div id="out"><div class="msg">Laden…</div></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+'use strict';
+const CFG = window.AC_CONFIG;
+const sb = supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true } });
+const TZ = 'Europe/Zurich';
+const out = document.getElementById('out');
+const h = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const q = async (p) => { const { data, error } = await p; if (error) throw error; return data; };
+const name = (m) => m ? [m.vorname, m.nachname].filter(Boolean).join(' ') : '?';
+const byName = (a, b) => (a.nachname + a.vorname).localeCompare(b.nachname + b.vorname, 'de');
+const isClub = (e) => !/^(Regio|National|International):/i.test(e.title);
+const dayKey = (d) => new Date(d).toLocaleDateString('sv-SE', { timeZone: TZ }); // YYYY-MM-DD
+const fD = (iso, o) => new Date(iso).toLocaleString('de-CH', { timeZone: TZ, ...o });
+const fDM = (k) => { const [y, m, d] = k.split('-'); return `${+d}.${+m}.`; };
+const fDMY = (k) => { const [y, m, d] = k.split('-'); return `${+d}.${+m}.${y}`; };
+
+/* Jahrestage (Geburtstag / Eintritt) im Fenster (from, to] – Tages-Schlüssel YYYY-MM-DD */
+function anniversaries(members, field, from, to) {
+  const res = [];
+  const y0 = +from.slice(0, 4), y1 = +to.slice(0, 4);
+  for (const m of members) {
+    const v = m[field]; if (!v) continue;
+    const [by, bm, bd] = v.split('-').map(Number);
+    for (let y = y0; y <= y1; y++) {
+      const k = `${y}-${String(bm).padStart(2, '0')}-${String(bd).padStart(2, '0')}`;
+      if (k > from && k <= to) res.push({ m, key: k, years: y - by });
+    }
+  }
+  return res.sort((a, b) => a.key.localeCompare(b.key));
+}
+const round = (n) => n > 0 && (n % 10 === 0 || (n >= 50 && n % 5 === 0));
+
+async function main() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) { out.innerHTML = `<div class="msg">Bitte zuerst in der <a href="./">App</a> anmelden.</div>`; return; }
+  const adm = await q(sb.rpc('is_admin'));
+  if (!adm) { out.innerHTML = `<div class="msg">Das Factsheet ist nur für Vorstand/Admins.</div>`; return; }
+
+  const [events, members, terms, roles] = await Promise.all([
+    q(sb.from('events').select('*').order('starts_at')),
+    q(sb.from('members').select('*')),
+    q(sb.from('board_terms').select('*')),
+    q(sb.from('board_roles').select('*').order('sort')),
+  ]);
+  const club = events.filter(isClub);
+  const today = dayKey(new Date());
+  const sel = document.getElementById('sel');
+  const want = new URLSearchParams(location.search).get('e');
+  const def = want || (club.find((e) => dayKey(e.starts_at) >= today) || club[club.length - 1] || {}).id;
+  sel.innerHTML = [...club].reverse().map((e) => `<option value="${e.id}" ${e.id === def ? 'selected' : ''}>${fD(e.starts_at, { day: '2-digit', month: '2-digit', year: 'numeric' })} – ${h(e.title)}</option>`).join('');
+  sel.onchange = () => { history.replaceState(null, '', '?e=' + sel.value); render(sel.value); };
+
+  const active = members.filter((m) => m.aktiv);
+  const byId = Object.fromEntries(members.map((m) => [m.id, m]));
+  const roleName = Object.fromEntries(roles.map((r) => [r.id, r.name]));
+
+  async function render(id) {
+    const ev = events.find((e) => e.id === id);
+    if (!ev) { out.innerHTML = '<div class="msg">Kein Clubanlass erfasst.</div>'; return; }
+    out.innerHTML = '<div class="msg">Laden…</div>';
+    const regs = await q(sb.from('registrations').select('*').eq('event_id', id));
+    const evDay = dayKey(ev.starts_at);
+    const idx = club.findIndex((e) => e.id === id);
+    const prev = club[idx - 1], next = club[idx + 1];
+    const fromK = prev ? dayKey(prev.starts_at) : dayKey(new Date(new Date(ev.starts_at).getTime() - 30 * 864e5));
+    const nextK = next ? dayKey(next.starts_at) : dayKey(new Date(new Date(ev.starts_at).getTime() + 30 * 864e5));
+
+    const boardOf = (mid) => terms.filter((t) => t.member_id === mid && t.start_date <= evDay && (!t.end_date || t.end_date >= evDay)).map((t) => roleName[t.role_id]);
+    const tag = (mid) => boardOf(mid).map((r) => `<span class="chip">${h(r)}</span>`).join('');
+    const an = regs.filter((r) => r.status === 'an').map((r) => ({ r, m: byId[r.member_id] })).filter((x) => x.m).sort((a, b) => byName(a.m, b.m));
+    const ab = regs.filter((r) => r.status === 'ab').map((r) => ({ r, m: byId[r.member_id] })).filter((x) => x.m).sort((a, b) => byName(a.m, b.m));
+    const open = active.filter((m) => !regs.some((r) => r.member_id === m.id)).sort(byName);
+    const partners = an.filter((x) => x.r.with_partner).length;
+    const guests = an.reduce((s, x) => s + (x.r.guests || 0), 0);
+    const total = an.length + partners + guests;
+    const status = (mid) => { const r = regs.find((x) => x.member_id === mid); return !r ? '<span class="chip">offen</span>' : r.status === 'an' ? '<span class="chip ok">dabei</span>' : '<span class="chip no">abgemeldet</span>'; };
+    const withBday = active.filter((m) => m.geburtsdatum);
+    const bdPast = anniversaries(withBday, 'geburtsdatum', fromK, evDay);
+    const bdNext = anniversaries(withBday, 'geburtsdatum', evDay, nextK);
+    const jub = anniversaries(active.filter((m) => m.eintritt), 'eintritt', fromK, nextK).filter((x) => x.years > 0 && x.years % 5 === 0);
+    const neu = active.filter((m) => m.eintritt && m.eintritt > fromK && m.eintritt <= evDay);
+    const upcoming = events.filter((e) => e.starts_at > ev.starts_at && !e.cancelled).slice(0, 8);
+    const bdRows = (list) => list.length ? `<table><tr><th>Datum</th><th>Name</th><th>Alter</th><th>Status</th></tr>${list.map((b) => `<tr><td>${fDM(b.key)}</td><td>${h(name(b.m))}</td><td>${b.years > 0 && b.years < 120 ? (round(b.years) ? `<b>${b.years}</b> <span class="chip">runder Geburtstag</span>` : b.years) : '–'}</td><td>${status(b.m.id)}</td></tr>`).join('')}</table>` : '<p class="muted small">Keine.</p>';
+
+    out.innerHTML = `<div class="page">
+      <div class="head"><img src="icons/logo.png" alt=""><div>
+        <div class="k">Factsheet Präsident · ${h(ev.kind)}</div>
+        <h1>${h(ev.title)}</h1>
+        <div class="m">${fD(ev.starts_at, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}, ${fD(ev.starts_at, { hour: '2-digit', minute: '2-digit' })} Uhr${ev.location ? ' · ' + h(ev.location) : ''}${ev.cancelled ? ' · <b style="color:var(--no)">ABGESAGT</b>' : ''}</div>
+      </div></div>
+
+      <div class="kpis">
+        <div class="kpi main"><b>${total}</b><span>Personen</span></div>
+        <div class="kpi"><b>${an.length}</b><span>Mitglieder</span></div>
+        <div class="kpi"><b>${partners}</b><span>Partner/innen</span></div>
+        <div class="kpi"><b>${guests}</b><span>Gäste</span></div>
+        <div class="kpi"><b>${ab.length}</b><span>Abgemeldet</span></div>
+        <div class="kpi"><b>${open.length}</b><span>Offen</span></div>
+      </div>
+      <div class="small muted">Rücklauf ${active.length ? Math.round((an.length + ab.length) / active.length * 100) : 0}% von ${active.length} aktiven Mitgliedern${ev.max_participants ? ` · max. ${ev.max_participants} Personen` : ''}${ev.reg_deadline ? ` · Anmeldeschluss ${fD(ev.reg_deadline, { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })}` : ''}</div>
+
+      <h2>Angemeldet (${an.length})</h2>
+      ${an.length ? `<table><tr><th>Name</th><th>Begleitung</th><th>Bemerkung</th></tr>${an.map((x) => `<tr><td>${h(name(x.m))}${tag(x.m.id)}</td><td>${[x.r.with_partner ? h([x.m.partner_vorname, x.m.partner_nachname].filter(Boolean).join(' ') || 'Partner/in') : '', x.r.guests ? `+${x.r.guests} Gast/Gäste` : ''].filter(Boolean).join(', ') || '–'}</td><td>${h(x.r.comment || '')}</td></tr>`).join('')}</table>` : '<p class="muted small">Noch niemand angemeldet.</p>'}
+
+      <div class="grid">
+        <div><h2>Abgemeldet (${ab.length})</h2>
+          ${ab.length ? `<table>${ab.map((x) => `<tr><td>${h(name(x.m))}${tag(x.m.id)}${x.r.comment ? `<div class="muted small">${h(x.r.comment)}</div>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted small">Keine.</p>'}</div>
+        <div><h2>Keine Antwort (${open.length})</h2>
+          <p class="small">${open.map((m) => h(name(m)) + (boardOf(m.id).length ? ' <span class="chip">Vorstand</span>' : '')).join(', ') || '–'}</p></div>
+      </div>
+
+      <h2>Geburtstage seit dem letzten Anlass (${fDMY(fromK)} – ${fDMY(evDay)})</h2>
+      ${prev ? `<p class="small muted" style="margin:0 0 4px">Letzter Clubanlass: ${h(prev.title)}</p>` : ''}
+      ${bdRows(bdPast)}
+
+      <h2>Geburtstage bis zum nächsten Anlass (bis ${fDMY(nextK)})</h2>
+      ${next ? `<p class="small muted" style="margin:0 0 4px">Nächster Clubanlass: ${h(next.title)}</p>` : ''}
+      ${bdRows(bdNext)}
+
+      ${jub.length || neu.length ? `<div class="grid">
+        <div><h2>Club-Jubiläen</h2>${jub.length ? `<table>${jub.map((j) => `<tr><td>${fDM(j.key)}</td><td>${h(name(j.m))}</td><td><b>${j.years} Jahre</b> im Club</td></tr>`).join('')}</table>` : '<p class="muted small">Keine.</p>'}</div>
+        <div><h2>Neue Mitglieder</h2>${neu.length ? `<table>${neu.map((m) => `<tr><td>${h(name(m))}</td><td>seit ${fDMY(m.eintritt)}</td></tr>`).join('')}</table>` : '<p class="muted small">Keine.</p>'}</div>
+      </div>` : ''}
+
+      <h2>Hinweise auf kommende Anlässe</h2>
+      ${upcoming.length ? `<table>${upcoming.map((e) => `<tr><td style="white-space:nowrap">${fD(e.starts_at, { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' })}</td><td>${h(e.title)}${isClub(e) ? '' : ' <span class="chip">extern</span>'}</td><td class="muted">${h(e.location || '')}</td></tr>`).join('')}</table>` : '<p class="muted small">Keine erfasst.</p>'}
+
+      <h2>Notizen</h2><div class="notes"></div>
+      <div class="foot">Stand ${new Date().toLocaleString('de-CH', { timeZone: TZ, dateStyle: 'short', timeStyle: 'short' })} · Vertraulich – nur für den Vorstand</div>
+    </div>`;
+  }
+  render(def);
+}
+main().catch((e) => { out.innerHTML = `<div class="msg">Fehler: ${h(e.message || e)}</div>`; });
+</script>
+</body>
+</html>
