@@ -1,4 +1,4 @@
-/* Ambassador Club Thun – App (v1.1) */
+/* Ambassador Club Thun – App (v1.3) */
 'use strict';
 const CFG = window.AC_CONFIG;
 const sb = supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
@@ -22,6 +22,7 @@ const fTime = (iso) => fmt(iso, { hour: '2-digit', minute: '2-digit' });
 const fDay = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('de-CH', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
 const fDM = (d) => d ? new Date(d + 'T12:00:00').toLocaleDateString('de-CH', { day: 'numeric', month: 'long' }) : '';
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: TZ });
+const ageOf = (gd) => { const t = today(); return +t.slice(0, 4) - +gd.slice(0, 4) - (t.slice(5) < gd.slice(5) ? 1 : 0); };
 const toLocalInput = (iso) => { if (!iso) return ''; const d = new Date(iso); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 const fromLocalInput = (v) => v ? new Date(v).toISOString() : null;
 const val = (id) => { const el = document.getElementById(id); if (!el) return null; if (el.type === 'checkbox') return el.checked; const v = el.value.trim(); return v === '' ? null : v; };
@@ -93,7 +94,7 @@ function renderLogin(msg) {
   const go = async () => {
     const c = document.getElementById('code').value;
     document.getElementById('go').disabled = true;
-    try { await loginWithCode(c); await start(); } catch (e) { renderLogin(e.message); }
+    try { await loginWithCode(c); rememberCode(c.toUpperCase().replace(/[^0-9A-Z]/g, '')); await start(); } catch (e) { renderLogin(e.message); }
   };
   document.getElementById('go').onclick = go;
   document.getElementById('code').onkeydown = (e) => { if (e.key === 'Enter') go(); };
@@ -117,18 +118,36 @@ async function loadBase() {
   S.me = mid ? S.byId[mid] : null;
 }
 
+function rememberCode(c) {
+  try { localStorage.setItem('ac_code', c); } catch { /* */ }
+  const want = '?code=' + c;
+  if (location.search !== want) history.replaceState(null, '', location.pathname + want + (location.hash || '#/programm'));
+}
+
 async function start() {
-  const params = new URLSearchParams(location.search);
-  const code = params.get('code');
-  if (code) {
-    history.replaceState(null, '', location.pathname + '#/programm');
-    try { await sb.auth.signOut({ scope: 'local' }); await loginWithCode(code); } catch (e) { return renderLogin(e.message); }
-  }
+  // Code bleibt in der Adresse (?code=…) und im Gerät gespeichert. So bleibt das Login auch beim
+  // «Zum Home-Bildschirm» erhalten (iPhone: Web-App hat eigenen Speicher, übernimmt aber die Adresse).
+  const norm = (c) => String(c || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+  const code = norm(new URLSearchParams(location.search).get('code'));
+  let stored = ''; try { stored = localStorage.getItem('ac_code') || ''; } catch { /* */ }
   if (/access_token|error_description/.test(location.hash)) {
     await new Promise((r) => setTimeout(r, 300));
-    history.replaceState(null, '', location.pathname + '#/programm');
+    history.replaceState(null, '', location.pathname + location.search + '#/programm');
   }
-  const { data: { session } } = await sb.auth.getSession();
+  let { data: { session } } = await sb.auth.getSession();
+  const useCode = code || (!session ? stored : '');
+  if (useCode && (!session || useCode !== stored)) {
+    try {
+      await sb.auth.signOut({ scope: 'local' }); await loginWithCode(useCode);
+      rememberCode(useCode);
+      ({ data: { session } } = await sb.auth.getSession());
+    } catch (e) {
+      try { localStorage.removeItem('ac_code'); } catch { /* */ }
+      history.replaceState(null, '', location.pathname + '#/programm');
+      return renderLogin(e.message);
+    }
+  } else if (code || (session && stored)) rememberCode(code || stored);
+  if (!location.hash || location.hash === '#') history.replaceState(null, '', location.pathname + location.search + '#/programm');
   if (!session) return renderLogin();
   try { await loadBase(); } catch (e) { return renderLogin(e.message); }
   if (!S.me) {
@@ -175,7 +194,27 @@ async function viewProgramm() {
   const byEv = {};
   regs.forEach((r) => (byEv[r.event_id] ||= []).push(r));
   const cnt = (c) => all.filter((e) => c === 'alle' || catOf(e) === c).length;
-  let html = `<div class="seg"><a href="#" data-past="0" class="${S.showPast ? '' : 'on'}">Kommende</a><a href="#" data-past="1" class="${S.showPast ? 'on' : ''}">Vergangene</a></div>
+  const hr = +fmt(new Date().toISOString(), { hour: 'numeric', hour12: false });
+  const gruss = hr < 11 ? 'Guten Morgen' : hr < 17 ? 'Grüezi' : 'Guten Abend';
+  let html = `<div class="hello"><div class="hi">${gruss} ${h(S.me.vorname)}</div></div>`;
+  if (!S.showPast) html += installHint();
+  if (!S.showPast) {
+    const soon = all.filter((e) => new Date(e.starts_at) > new Date() && !e.cancelled).slice(0, 3);
+    const sIds = soon.map((e) => e.id);
+    const myRegs = sIds.length ? await q(sb.from('registrations').select('event_id,status').eq('member_id', S.me.id).in('event_id', sIds)) : [];
+    html += `<h2 style="margin-top:6px">Was steht an?</h2><div class="list">${soon.map((e) => `<a class="row" href="#/event/${e.id}">
+        <div class="date"><div class="d">${fmt(e.starts_at, { day: 'numeric' })}</div><div class="m">${fmt(e.starts_at, { month: 'short' })}</div></div>
+        <div class="grow"><b>${h(evTitle(e))}</b><div class="sub">${fmt(e.starts_at, { weekday: 'short' })} ${fTime(e.starts_at)}${e.location ? ' · ' + h(e.location) : ''}</div></div>
+        ${catOf(e) !== 'club' ? `<span class="chip blue">${catLabel(e)}</span>` : statusChip(myRegs.find((r) => r.event_id === e.id))}</a>`).join('') || '<div class="row muted">Keine Anlässe erfasst.</div>'}</div>`;
+    const bd = birthdaysAround(-3, 7);
+    if (bd.length) html += `<h2>Geburtstage</h2><div class="list">${bd.map((b) => `<div class="row">
+        <div class="av gold">🎂</div>
+        <div class="grow"><a href="#/m/${b.m.id}" style="color:inherit;text-decoration:none"><b>${h(fullName(b.m))}</b></a>
+          <div class="sub">${b.days === 0 ? '<b>heute</b>' : b.days === 1 ? 'morgen' : b.days > 0 ? 'in ' + b.days + ' Tagen' : b.days === -1 ? 'gestern' : 'vor ' + (-b.days) + ' Tagen'} · ${b.days > 0 ? 'wird' : ''} ${b.age} Jahre</div></div>
+        ${b.days <= 0 && b.m.id !== S.me.id ? `<button class="btn sm p" data-gr="${b.m.id}" data-age="${b.age}" data-late="${b.days < 0 ? 1 : ''}">🎉 Gratulieren</button>` : ''}</div>`).join('')}</div>`;
+  }
+  html += `<h2>Jahresprogramm</h2>
+    <div class="seg"><a href="#" data-past="0" class="${S.showPast ? '' : 'on'}">Kommende</a><a href="#" data-past="1" class="${S.showPast ? 'on' : ''}">Vergangene</a></div>
     <div class="filt">${[['alle', 'Alle'], ['club', CAT.club], ['regio', CAT.regio], ['nat', CAT.nat]].map(([k, l]) => `<a href="#" data-f="${k}" class="${S.filter === k ? 'on' : ''}">${l} <span>${cnt(k)}</span></a>`).join('')}</div>`;
   if (S.admin) html += `<div class="btns" style="margin-bottom:12px"><a class="btn sm ghost" href="#/admin/event/neu">+ Anlass</a><a class="btn sm ghost" href="#/admin/serie">+ Clubabend-Serie</a></div>`;
   if (!events.length) html += `<div class="empty">Keine ${S.showPast ? 'vergangenen' : 'kommenden'} Anlässe in dieser Auswahl.</div>`;
@@ -202,11 +241,73 @@ async function viewProgramm() {
     </div>`;
   }
   $app.querySelector('main').innerHTML = html;
+  const ihx = document.getElementById('ih_x');
+  if (ihx) ihx.onclick = () => { try { localStorage.setItem('ac_ih_hide', '1'); } catch { /* */ } document.getElementById('ih').remove(); };
+  const ihb = document.getElementById('ih_btn');
+  if (ihb) ihb.onclick = async () => { S.installEvt.prompt(); try { await S.installEvt.userChoice; } catch { /* */ } viewProgramm(); };
+  $app.querySelectorAll('[data-gr]').forEach((b) => b.onclick = () => congratulate(S.byId[b.dataset.gr], +b.dataset.age, !!b.dataset.late));
   $app.querySelectorAll('[data-past]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); S.showPast = a.dataset.past === '1'; viewProgramm(); });
   $app.querySelectorAll('[data-f]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); S.filter = a.dataset.f; try { localStorage.setItem('ac_filter', S.filter); } catch { /* */ } viewProgramm(); });
   $app.querySelectorAll('[data-reg]').forEach((b) => b.onclick = async () => {
     try { await setReg(b.dataset.reg, S.me.id, { status: b.dataset.st }); toast(b.dataset.st === 'an' ? 'Angemeldet' : 'Abgemeldet'); viewProgramm(); } catch (e) { err(e); }
   });
+}
+/* Hinweis «Zum Home-Bildschirm» – nur im Browser, nicht in der installierten App */
+function installHint() {
+  const standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  let hidden = false; try { hidden = localStorage.getItem('ac_ih_hide') === '1'; } catch { /* */ }
+  if (standalone || hidden) return '';
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document);
+  const android = /Android/.test(ua);
+  const share = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
+  const steps = ios
+    ? `<ol><li>Unten in Safari auf <b>Teilen</b> ${share} tippen</li><li>Nach unten scrollen: <b>Zum Home-Bildschirm</b></li><li>Oben rechts <b>Hinzufügen</b> – fertig</li></ol><p class="small muted">Wichtig: in <b>Safari</b> öffnen (nicht in WhatsApp oder Mail-Vorschau).</p>`
+    : android
+      ? `<ol><li>In Chrome oben rechts auf <b>⋮</b> tippen</li><li><b>App installieren</b> oder <b>Zum Startbildschirm hinzufügen</b></li><li>Bestätigen – fertig</li></ol>`
+      : `<p>Am Computer: in Chrome/Edge in der Adresszeile auf das Installieren-Symbol klicken. Am einfachsten öffnest du die App aber auf dem Handy mit deinem persönlichen Link.</p>`;
+  return `<div class="card ih" id="ih"><div style="display:flex;gap:10px;align-items:flex-start">
+    <img src="icons/icon-192.png" alt="" style="width:42px;height:42px;border-radius:10px">
+    <div class="grow" style="flex:1"><b>App auf den Home-Bildschirm holen</b><div class="small muted">Dann startet AC Thun mit einem Tipp – wie jede andere App, ohne Login.</div></div>
+    <button class="btn sm ghost" id="ih_x" aria-label="Ausblenden">✕</button></div>
+    ${S.installEvt ? '<button class="btn p block" id="ih_btn" style="margin-top:10px">Jetzt installieren</button>' : steps}</div>`;
+}
+
+/* Geburtstage im Fenster [from, to] Tage relativ zu heute */
+function birthdaysAround(from, to) {
+  const t0 = new Date(today() + 'T12:00:00');
+  const out = [];
+  for (const m of S.members) {
+    if (!m.aktiv || !m.geburtsdatum || !m.show_birthday) continue;
+    const [y, mo, d] = m.geburtsdatum.split('-').map(Number);
+    for (const yr of [t0.getFullYear() - 1, t0.getFullYear(), t0.getFullYear() + 1]) {
+      const days = Math.round((new Date(yr, mo - 1, d, 12) - t0) / 864e5);
+      if (days >= from && days <= to) out.push({ m, days, age: yr - y });
+    }
+  }
+  return out.sort((a, b) => a.days - b.days);
+}
+const waNumber = (n) => { let s = String(n || '').replace(/[^\d+]/g, ''); if (s.startsWith('00')) s = '+' + s.slice(2); if (s.startsWith('0')) s = '+41' + s.slice(1); return s.replace('+', ''); };
+function congratulate(m, age, late) {
+  const text = `Lieber ${m.vorname}\n\n${late ? 'Nachträglich ' : ''}herzliche Gratulation zum ${age}. Geburtstag! 🎉 Ich wünsche dir alles Gute, Gesundheit und viel Freude im neuen Lebensjahr.\n\nHerzliche Grüsse\n${S.me.vorname}`;
+  const mob = m.mobile || m.tel;
+  const opts = [
+    mob ? `<a class="btn p block" target="_blank" rel="noopener" href="https://wa.me/${waNumber(mob)}?text=${encodeURIComponent(text)}">WhatsApp</a>` : '',
+    mob ? `<a class="btn block" href="sms:${h(mob.replace(/\s/g, ''))}?&body=${encodeURIComponent(text)}">SMS</a>` : '',
+    m.email ? `<a class="btn block" href="mailto:${h(m.email)}?subject=${encodeURIComponent('Herzliche Gratulation zum ' + age + '. Geburtstag')}&body=${encodeURIComponent(text)}">E-Mail</a>` : '',
+    mob ? `<a class="btn ghost block" href="tel:${h(mob.replace(/\s/g, ''))}">Anrufen</a>` : '',
+  ].filter(Boolean);
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = `<div class="card sheet"><b>🎉 ${h(fullName(m))} – ${age} Jahre</b>
+    <textarea id="gr_txt" style="margin:10px 0;min-height:150px">${h(text)}</textarea>
+    <div style="display:grid;gap:8px">${opts.join('') || '<p class="muted">Keine Telefonnummer oder E-Mail hinterlegt.</p>'}</div>
+    <button class="btn ghost block" id="gr_x" style="margin-top:8px">Schliessen</button></div>`;
+  document.body.appendChild(ov);
+  const upd = () => { const t = encodeURIComponent(document.getElementById('gr_txt').value);
+    ov.querySelectorAll('a[href]').forEach((a) => { a.href = a.href.replace(/(text=|body=)[^&]*/, '$1' + t); }); };
+  ov.querySelector('#gr_txt').oninput = upd;
+  ov.onclick = (e) => { if (e.target === ov || e.target.id === 'gr_x') ov.remove(); };
 }
 function statusChip(r) {
   if (!r) return '<span class="chip gold">offen</span>';
@@ -322,7 +423,7 @@ async function viewMember(id) {
    <div class="card"><dl class="kv">
      ${kv('Adresse', addr ? `<a target="_blank" rel="noopener" href="https://maps.google.com/?q=${encodeURIComponent(addr)}">${h(addr)}</a>` : '')}
      ${kv('Mobile', tel(m.mobile))}${kv('Telefon', tel(m.tel))}${kv('E-Mail', m.email ? `<a href="mailto:${h(m.email)}">${h(m.email)}</a>` : '')}
-     ${kv('Geburtstag', m.show_birthday && m.geburtsdatum ? h(fDM(m.geburtsdatum)) : '')}
+     ${kv('Geburtstag', m.show_birthday && m.geburtsdatum ? h(fDM(m.geburtsdatum)) + ` <span class="muted">(${ageOf(m.geburtsdatum)} Jahre)</span>` : '')}
      ${kv('Partner/in', h([m.partner_vorname, m.partner_nachname].filter(Boolean).join(' ')))}
      ${kv('Im Club seit', h(fDay(m.eintritt)))}${kv('Interessen', h(m.hobbies))}
    </dl></div>`;
@@ -378,7 +479,7 @@ function viewBirthdays() {
   });
   const row = (b) => `<a class="row" href="#/m/${b.m.id}"><div class="date"><div class="d">${b.d}</div><div class="m">${MONTHS[b.mo - 1].slice(0, 3)}</div></div>
     <div class="grow"><b>${h(fullName(b.m))}</b><div class="sub">${b.days === 0 ? 'heute!' : b.days === 1 ? 'morgen' : 'in ' + b.days + ' Tagen'}</div></div>
-    ${b.days === 0 ? '<span class="chip ok">🎉 heute</span>' : ''} ${b.age % 5 === 0 && b.age >= 40 ? `<span class="chip gold">wird ${b.age}</span>` : ''}</a>`;
+    ${b.days === 0 ? '<span class="chip ok">🎉 heute</span>' : ''} <span class="chip ${b.age % 5 === 0 ? 'gold' : ''}">${b.days === 0 ? '' : 'wird '}${b.age}</span></a>`;
   const soon = list.filter((b) => b.days <= 45).sort((a, b) => a.days - b.days);
   let html = `<h2>Nächste 45 Tage</h2><div class="list">${soon.map(row).join('') || '<div class="row muted">Keine</div>'}</div>`;
   for (let i = 0; i < 12; i++) {
@@ -400,7 +501,10 @@ function viewMore() {
     <div class="list">${r('#/bald/shop', 'Shop', 'Pins, Aufkleber, AC-Gürtel')}${r('#/bald/dokumente', 'Dokumente', 'Statuten, Protokolle, Downloads')}${r('#/bald/mitteilungen', 'Mitteilungen', 'E-Mail & Push an Mitglieder')}</div>
     ${S.admin ? `<h2>Verwaltung</h2><div class="list">${r('factsheet.html', 'Factsheet Präsident', 'nächster Clubanlass')}${r('#/admin', 'Admin-Bereich', 'Mitglieder, Codes, Programm, Vorstand')}</div>` : ''}
     <button class="btn ghost block" id="logout" style="margin-top:10px">Abmelden</button>`, { tab: 'mehr' });
-  document.getElementById('logout').onclick = async () => { await sb.auth.signOut(); S.me = null; renderLogin(); };
+  document.getElementById('logout').onclick = async () => {
+    try { localStorage.removeItem('ac_code'); } catch { /* */ }
+    await sb.auth.signOut(); S.me = null; history.replaceState(null, '', location.pathname); renderLogin();
+  };
 }
 function viewSoon(what) {
   const t = { shop: 'Shop', dokumente: 'Dokumente', mitteilungen: 'Mitteilungen' }[what] || 'Demnächst';
@@ -454,7 +558,7 @@ function viewInstall() {
     ${S.installEvt ? '<button class="btn p block" id="inst">Jetzt installieren</button>' : ''}</div>`, { tab: 'mehr', back: true });
   const b = document.getElementById('inst'); if (b) b.onclick = () => S.installEvt.prompt();
 }
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.installEvt = e; });
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.installEvt = e; if (S.me && /^#\/?(programm)?$/.test(location.hash || '#/')) viewProgramm(); });
 
 /* ---------- Admin ---------- */
 function viewAdmin() {
@@ -506,23 +610,69 @@ async function viewAdminMember(id) {
   };
 }
 
+const MAIL_TPL = (absender) => `Lieber {vorname}
+
+Der Ambassador Club Thun hat eine eigene App: Jahresprogramm mit An- und Abmeldung, Mitgliederliste mit Telefonnummern, Vorstand, Geburtstage und ein Kalender-Abo fürs Handy.
+
+Dein persönlicher Zugang – einfach antippen:
+{link}
+
+Oder in der App den Code eingeben: {code}
+
+Tipp: Nach dem Öffnen im Browser «Zum Home-Bildschirm» wählen (iPhone: Teilen-Symbol, Android: Menü ⋮). Dann ist die App wie jede andere auf dem Handy.
+
+Bitte den Link nicht weitergeben – er ist dein persönlicher Schlüssel.
+
+Herzliche Grüsse
+${absender}
+Ambassador Club Thun`;
+
 async function viewAdminCodes() {
   shell('Codes & Links', '', { tab: 'mehr', back: true }); loading();
-  const secs = await q(sb.from('member_secrets').select('member_id,login_code'));
+  const [secs, logs] = await Promise.all([q(sb.from('member_secrets').select('member_id,login_code')), q(sb.from('mail_log').select('member_id,ok,sent_at').eq('kind', 'code').order('sent_at'))]);
   const code = Object.fromEntries(secs.map((s) => [s.member_id, s.login_code]));
+  const lastMail = {}; logs.forEach((l) => { if (l.ok) lastMail[l.member_id] = l.sent_at; });
   const ms = S.members.filter((m) => m.aktiv).sort(sortName);
   const link = (m) => `${appBase()}?code=${code[m.id]}`;
   const mail = (m) => `mailto:${encodeURIComponent(m.email || '')}?subject=${encodeURIComponent('Deine neue AC Thun App')}&body=${encodeURIComponent(`Lieber ${m.vorname}\n\nUnser Club hat eine eigene App: Jahresprogramm mit An-/Abmeldung, Mitgliederliste, Vorstand, Geburtstage und Kalender-Abo.\n\nDein persönlicher Zugang (bitte nicht weitergeben):\n${link(m)}\n\nLink antippen – fertig. Danach im Browser «Zum Home-Bildschirm» wählen, dann ist die App wie jede andere auf dem Handy.\n\nHerzliche Grüsse\n${S.me.vorname}`)}`;
   $app.querySelector('main').innerHTML = `
     ${CFG.appUrl ? '' : '<div class="card" style="background:var(--warn-bg)">Hinweis: In <b>config.js</b> ist noch keine <b>appUrl</b> eingetragen. Die Links zeigen auf die aktuelle Adresse.</div>'}
+    <details class="card" id="sm" open><summary><b>✉️ Serienmail: Code an Mitglieder senden</b> ›</summary>
+      <p class="small muted">Platzhalter: {vorname} {nachname} {link} {code}. Jedes Mitglied erhält seinen eigenen Link.</p>
+      <label>Betreff</label><input id="sm_subj" value="Deine persönliche AC Thun App">
+      <label>Text</label><textarea id="sm_text" style="min-height:230px">${h(MAIL_TPL(S.me.vorname))}</textarea>
+      <label>Empfänger</label><select id="sm_who">
+        <option value="never">Nur wer noch nie eingeloggt war und noch keine Mail erhielt (${ms.filter((m) => m.email && !m.auth_user_id && !lastMail[m.id]).length})</option>
+        <option value="notin">Alle, die noch nie eingeloggt waren (${ms.filter((m) => m.email && !m.auth_user_id).length})</option>
+        <option value="all">Alle aktiven Mitglieder mit E-Mail (${ms.filter((m) => m.email).length})</option></select>
+      <div class="btns" style="margin-top:10px"><button class="btn" id="sm_test">Testmail an mich</button><button class="btn p" id="sm_go">Serienmail senden</button></div>
+      <div id="sm_res"></div>
+      <p class="small muted">Ohne E-Mail: ${ms.filter((m) => !m.email).map((m) => h(fullName(m))).join(', ') || '–'} → Link einzeln weitergeben.</p></details>
     <button class="btn block" id="csv" style="margin-bottom:12px">CSV für Serienmail (Name, E-Mail, Link)</button>
-    <div class="list">${ms.map((m) => `<div class="row"><div class="grow"><b>${h(fullName(m))}</b><div class="sub mono">${h(code[m.id] || '–')}${m.auth_user_id ? ' · ✓ eingeloggt' : ''}</div></div>
+    <div class="list">${ms.map((m) => `<div class="row"><div class="grow"><b>${h(fullName(m))}</b><div class="sub mono">${h(code[m.id] || '–')}${m.auth_user_id ? ' · ✓ eingeloggt' : ''}${lastMail[m.id] ? ' · ✉️ ' + fmt(lastMail[m.id], { day: 'numeric', month: 'numeric' }) : ''}</div></div>
       <button class="btn sm ghost" data-cp="${m.id}">Link</button>${m.email ? `<a class="btn sm ghost" href="${h(mail(m))}">Mail</a>` : ''}<button class="btn sm ghost" data-new="${m.id}" title="Neuer Code">↻</button></div>`).join('')}</div>`;
   $app.querySelectorAll('[data-cp]').forEach((b) => b.onclick = () => copy(link(S.byId[b.dataset.cp])));
   $app.querySelectorAll('[data-new]').forEach((b) => b.onclick = async () => {
     if (!confirm('Neuen Code erzeugen? Der alte Link funktioniert dann nicht mehr (bestehende Logins bleiben).')) return;
     try { await q(sb.rpc('regenerate_login_code', { p_member: b.dataset.new })); viewAdminCodes(); } catch (e) { err(e); }
   });
+  const send = async (test) => {
+    const who = val('sm_who');
+    const target = ms.filter((m) => m.email && (who === 'all' || (!m.auth_user_id && (who === 'notin' || !lastMail[m.id]))));
+    const body = { subject: val('sm_subj'), text: document.getElementById('sm_text').value };
+    if (test) { body.test_to = S.me.email || prompt('Testmail an welche Adresse?'); if (!body.test_to) return; }
+    else { if (!target.length) return toast('Keine Empfänger'); if (!confirm(`Serienmail an ${target.length} Mitglieder senden?`)) return; body.member_ids = target.map((m) => m.id); }
+    const res = document.getElementById('sm_res'); res.innerHTML = '<p class="small">Versand läuft…</p>';
+    const { data, error } = await sb.functions.invoke('send-codes', { body });
+    let j = data;
+    if (error) { try { j = await error.context.json(); } catch { j = { error: error.message }; } }
+    if (j?.error) { res.innerHTML = `<div class="card" style="background:var(--no-bg);color:var(--no)">${h(j.error)}${j.setup ? '<br><br>Einrichtung: Gratis-Konto bei brevo.com, Absender bestätigen, API-Key erstellen und in Supabase unter Edge Functions → Secrets als BREVO_API_KEY und MAIL_FROM eintragen.' : ''}</div>`; return; }
+    res.innerHTML = `<p><b>${j.sent} gesendet</b>${j.failed ? `, <span style="color:var(--no)">${j.failed} Fehler</span>` : ''}${test ? ` (Test an ${h(body.test_to)})` : ''}</p>
+      <div class="res">${j.results.filter((r) => !r.ok).map((r) => `<div>✗ ${h(r.name)} – ${h(r.error || '')}</div>`).join('')}</div>`;
+    if (!test) setTimeout(viewAdminCodes, 2500);
+  };
+  document.getElementById('sm_test').onclick = () => send(true);
+  document.getElementById('sm_go').onclick = () => send(false);
   document.getElementById('csv').onclick = () => download('AC_Thun_Zugangslinks.csv', csv([['Anrede', 'Vorname', 'Nachname', 'E-Mail', 'Link'], ...ms.map((m) => [m.anrede, m.vorname, m.nachname, m.email, link(m)])]), 'text/csv');
 }
 
@@ -707,6 +857,11 @@ async function viewAdminTerm(id) {
   .filt a span{color:var(--muted);font-size:12px;margin-left:2px}
   .filt a.on{background:#2E3192;border-color:#2E3192;color:#fff}.filt a.on span{color:#cfd0f5}
   .chip.blue{background:#e6e7f7;color:#2E3192}
+  .hello{margin:2px 0 14px}.hello .hi{font-size:22px;font-weight:700;color:var(--navy)}
+  .res{max-height:260px;overflow:auto;font-size:13px}
+  .ih{border:1px solid var(--gold);background:var(--warn-bg)}.ih ol{margin:10px 0 4px;padding-left:22px}.ih li{margin:3px 0}
+  .ov{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:60;display:flex;align-items:flex-end;justify-content:center;padding:12px}
+  .ov .sheet{width:100%;max-width:480px;margin:0 0 calc(10px + env(safe-area-inset-bottom))}
   .card.ev.ext{border-left:4px solid var(--gold-l,#c4a76a)}`;
   document.head.appendChild(st);
 })();

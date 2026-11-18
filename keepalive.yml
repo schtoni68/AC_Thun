@@ -1,0 +1,15 @@
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: '17 6 */3 * *'   # alle 3 Tage, 06:17 UTC
+  workflow_dispatch:          # manuell auslösbar (Actions → Run workflow)
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Supabase anpingen
+        run: |
+          curl -fsS "https://yapavquhsfgdgeapavys.supabase.co/rest/v1/board_roles?select=id&limit=1" \
+            -H "apikey: sb_publishable_2w5HfwctjcSSdyrVAo7LiQ_kqNk87yd" -o /dev/null -w "HTTP %{http_code}\n"

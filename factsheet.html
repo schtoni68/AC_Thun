@@ -126,7 +126,7 @@ async function main() {
     const jub = anniversaries(active.filter((m) => m.eintritt), 'eintritt', fromK, nextK).filter((x) => x.years > 0 && x.years % 5 === 0);
     const neu = active.filter((m) => m.eintritt && m.eintritt > fromK && m.eintritt <= evDay);
     const upcoming = events.filter((e) => e.starts_at > ev.starts_at && !e.cancelled).slice(0, 8);
-    const bdRows = (list) => list.length ? `<table><tr><th>Datum</th><th>Name</th><th>Alter</th><th>Status</th></tr>${list.map((b) => `<tr><td>${fDM(b.key)}</td><td>${h(name(b.m))}</td><td>${b.years > 0 && b.years < 120 ? (round(b.years) ? `<b>${b.years}</b> <span class="chip">runder Geburtstag</span>` : b.years) : '–'}</td><td>${status(b.m.id)}</td></tr>`).join('')}</table>` : '<p class="muted small">Keine.</p>';
+    const bdRows = (list) => list.length ? `<table><tr><th>Datum</th><th>Name</th><th>Alter</th><th>Status</th></tr>${list.map((b) => `<tr><td>${fDM(b.key)}</td><td>${h(name(b.m))}</td><td>${b.years > 0 && b.years < 120 ? (round(b.years) ? `<b>${b.years} Jahre</b> <span class="chip">runder Geburtstag</span>` : `${b.years} Jahre`) : '–'}</td><td>${status(b.m.id)}</td></tr>`).join('')}</table>` : '<p class="muted small">Keine.</p>';
 
     out.innerHTML = `<div class="page">
       <div class="head"><img src="icons/logo.png" alt=""><div>
