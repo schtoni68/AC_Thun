@@ -1,7 +1,6 @@
 {
   "name": "Ambassador Club Thun",
   "short_name": "AC Thun",
-  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f4f3ef",
