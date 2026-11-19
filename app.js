@@ -1,4 +1,4 @@
-/* Ambassador Club Thun – App (v1.4) */
+/* Ambassador Club Thun – App (v1.5) */
 'use strict';
 const CFG = window.AC_CONFIG;
 const sb = supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
@@ -13,6 +13,8 @@ const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'A
 
 /* ---------- helpers ---------- */
 const h = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/* Factsheet mit Code in der Adresse – so klappt es auch in Safari / in der iPhone-Web-App */
+const factsheetUrl = (e) => { let c = ''; try { c = localStorage.getItem('ac_code') || ''; } catch { /* */ } const p = new URLSearchParams(); if (e) p.set('e', e); if (c) p.set('code', c); const qs = p.toString(); return 'factsheet.html' + (qs ? '?' + qs : ''); };
 const appBase = () => CFG.appUrl || (location.origin + location.pathname);
 const fullName = (m) => m ? [m.vorname, m.nachname].filter(Boolean).join(' ') : '–';
 const sortName = (a, b) => ((a.nachname || '') + (a.vorname || '')).localeCompare((b.nachname || '') + (b.vorname || ''), 'de');
@@ -127,6 +129,7 @@ async function loadBase() {
     q(sb.from('members').select('*').order('nachname')), q(sb.from('board_roles').select('*').order('sort')),
     q(sb.from('absences').select('*').gte('bis', since).order('von')),
   ]);
+  try { S.settings = Object.fromEntries((await q(sb.from('settings').select('key,value'))).map((x) => [x.key, x.value])); } catch { S.settings = {}; }
   S.admin = !!adm;
   S.members = members; S.byId = Object.fromEntries(members.map((m) => [m.id, m]));
   S.roles = roles; S.absences = absences;
@@ -134,6 +137,7 @@ async function loadBase() {
   S.cand = isCand(S.me) && !S.admin;
   if (S.cand) S.filter = 'club';
 }
+const setv = (k, d = null) => (S.settings && S.settings[k] != null ? S.settings[k] : d);
 const memberList = () => S.members.filter((m) => m.aktiv && !isCand(m));
 const candList = () => S.members.filter((m) => m.aktiv && isCand(m));
 
@@ -189,9 +193,11 @@ const routes = [
   [/^admin$/, viewAdmin], [/^admin\/mitglieder$/, viewAdminMembers], [/^admin\/m\/(.+)$/, viewAdminMember],
   [/^admin\/event\/(.+)$/, viewAdminEvent], [/^admin\/serie$/, viewAdminSeries], [/^admin\/import$/, viewAdminImport],
   [/^admin\/codes$/, viewAdminCodes], [/^admin\/vorstand$/, viewAdminBoard], [/^admin\/term\/(.+)$/, viewAdminTerm],
+  [/^shop$/, viewShop], [/^shop\/bestellungen$/, viewMyOrders], [/^dokumente$/, viewDocuments],
+  [/^admin\/einstellungen$/, viewAdminSettings], [/^admin\/abwesenheiten$/, () => viewAbsences(null, true)], [/^admin\/shop$/, viewAdminShop], [/^admin\/produkt\/(.+)$/, viewAdminProduct],
   [/^admin\/kandidaten$/, viewAdminCandidates], [/^admin\/mail(?:\/(.+))?$/, viewAdminMail], [/^admin\/abwesenheit\/(.+)$/, (id) => viewAbsences(id)],
 ];
-const CAND_BLOCKED = /^(mitglieder|m\/|vorstand|geburtstage|veto\/)/;
+const CAND_BLOCKED = /^(mitglieder|m\/|vorstand|geburtstage|veto\/|shop)/;
 async function route() {
   if (!S.me) return;
   const path = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
@@ -378,7 +384,7 @@ async function viewEvent(id) {
       <div style="margin-top:8px">${e.cancelled ? '<span class="chip">ABGESAGT</span> ' : ''}${S.cand ? '' : `<span class="chip">${persons} Personen angemeldet${e.max_participants ? ' / max. ' + e.max_participants : ''}</span>`}
       ${e.reg_deadline ? ` <span class="chip">Anmeldeschluss ${fmt(e.reg_deadline, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>` : ''}</div>
     </div>`;
-  if (S.admin && !ext) html += `<a class="btn p block" href="factsheet.html?e=${e.id}" style="margin-bottom:10px">📋 Factsheet Präsident</a>`;
+  if (S.admin && !ext) html += `<a class="btn p block" href="${factsheetUrl(e.id)}" style="margin-bottom:10px">📋 Factsheet Präsident</a>`;
   if (e.description) html += `<div class="card" style="white-space:pre-wrap">${h(e.description)}</div>`;
   html += `<div class="card"><b>Meine Anmeldung</b> ${statusChip(mine)}`;
   if (closed) html += `<p class="muted small">${e.cancelled ? 'Der Anlass ist abgesagt.' : 'Die Anmeldung ist geschlossen.'}</p>`;
@@ -470,7 +476,7 @@ async function viewMember(id) {
      ${m.mobile || m.tel ? `<a class="btn p" href="tel:${h((m.mobile || m.tel).replace(/\s/g, ''))}">Anrufen</a>` : ''}
      ${m.mobile ? `<a class="btn" href="sms:${h(m.mobile.replace(/\s/g, ''))}">SMS</a>` : ''}
      ${m.email ? `<a class="btn" href="mailto:${h(m.email)}">E-Mail</a>` : ''}
-     <button class="btn" id="vcf">Kontakt</button></div>
+     <button class="btn" id="vcf">Kontakt</button>${m.lebenslauf_path && !S.cand ? '<button class="btn" id="cv">📄 Lebenslauf</button>' : ''}</div>
    <div class="card"><dl class="kv">
      ${kv('Adresse', addr ? `<a target="_blank" rel="noopener" href="https://maps.google.com/?q=${encodeURIComponent(addr)}">${h(addr)}</a>` : '')}
      ${kv('Mobile', tel(m.mobile))}${kv('Telefon', tel(m.tel))}${kv('E-Mail', m.email ? `<a href="mailto:${h(m.email)}">${h(m.email)}</a>` : '')}
@@ -484,6 +490,7 @@ async function viewMember(id) {
   $app.querySelector('main').innerHTML = html;
   document.getElementById('vcf').onclick = () => download(`${m.vorname}_${m.nachname}.vcf`, vcard(m), 'text/vcard');
   const sl = document.getElementById('sendlink'); if (sl) sl.onclick = () => sendLinkSheet(m);
+  const cv = document.getElementById('cv'); if (cv) cv.onclick = () => openCV(m);
 }
 function vcard(m) {
   const e = (s) => String(s || '').replace(/([,;\\])/g, '\\$1');
@@ -550,9 +557,9 @@ function viewMore() {
   shell('Mehr', `
     <div class="card" style="display:flex;gap:12px;align-items:center"><div class="av ${isCand(S.me) ? 'cand' : ''}">${h(initials(S.me))}</div><div><b>${h(fullName(S.me))}</b><div class="muted small">${S.admin ? 'Administrator' : isCand(S.me) ? 'Kandidat' : 'Mitglied'}</div></div></div>
     <div class="list">${r('#/profil', 'Mein Profil', 'Adresse, Telefon, Geburtstag')}${r('#/abwesenheit', 'Meine Abwesenheiten', absNow(S.me.id) ? h(absText(absNow(S.me.id))) : 'Ferien, Krankheit etc. eintragen')}${r('#/kalender', 'Kalender abonnieren', 'Jahresprogramm im eigenen Kalender')}${r('#/link', 'Mein persönlicher Login-Link', 'für weitere Geräte')}${r('#/installieren', 'App auf Startbildschirm', 'iPhone & Android')}</div>
-    ${S.cand ? '' : `<h2>Demnächst</h2>
-    <div class="list">${r('#/bald/shop', 'Shop', 'Pins, Aufkleber, AC-Gürtel')}${r('#/bald/dokumente', 'Dokumente', 'Statuten, Protokolle, Downloads')}</div>`}
-    ${S.admin ? `<h2>Verwaltung</h2><div class="list">${r('factsheet.html', 'Factsheet Präsident', 'nächster Clubanlass')}${r('#/admin/mail', 'E-Mail an Mitglieder', 'an alle oder einzelne')}${r('#/admin/kandidaten', 'Kandidaten & Veto', candList().length + ' Kandidaten')}${r('#/admin', 'Admin-Bereich', 'Mitglieder, Codes, Programm, Vorstand')}</div>` : ''}
+    <h2>Club</h2>
+    <div class="list">${S.cand ? '' : r('#/shop', 'Shop', 'Pins, Aufkleber, AC-Gürtel – bestellen')}${r('#/dokumente', 'Dokumente', 'Statuten, Protokolle, Downloads')}</div>
+    ${S.admin ? `<h2>Verwaltung</h2><div class="list">${r(factsheetUrl(), 'Factsheet Präsident', 'nächster Clubanlass')}${r('#/admin/mail', 'E-Mail an Mitglieder', 'an alle oder einzelne')}${r('#/admin/kandidaten', 'Kandidaten & Veto', candList().length + ' Kandidaten')}${r('#/admin/abwesenheiten', 'Abwesenheiten', 'für alle Mitglieder bearbeiten')}${r('#/admin/shop', 'Shop verwalten', 'Artikel und Bestellungen')}${r('#/admin/einstellungen', 'Einstellungen', 'Veto, Antwortadresse, Shop, QR-Rechnung')}${r('#/admin', 'Admin-Bereich', 'Mitglieder, Codes, Programm, Vorstand')}</div>` : ''}
     <button class="btn ghost block" id="logout" style="margin-top:10px">Abmelden</button>`, { tab: 'mehr' });
   document.getElementById('logout').onclick = async () => {
     try { localStorage.removeItem('ac_code'); } catch { /* */ }
@@ -617,10 +624,14 @@ window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.in
 function viewAdmin() {
   const r = (href, t, s) => `<a class="row" href="${href}"><div class="grow"><b>${t}</b><div class="sub">${s}</div></div><span class="muted">›</span></a>`;
   shell('Admin', `<div class="list">
-    ${r('factsheet.html', 'Factsheet Präsident', 'Teilnehmer, Abmeldungen, Geburtstage – druckbar')}
+    ${r(factsheetUrl(), 'Factsheet Präsident', 'Teilnehmer, Abmeldungen, Geburtstage – druckbar')}
     ${r('#/admin/mitglieder', 'Mitglieder verwalten', 'erfassen, bearbeiten, Admin-Rechte')}
     ${r('#/admin/kandidaten', 'Kandidaten & Veto', 'Götti, Teilnahmen, Veto 1 und 2, Aufnahme')}
     ${r('#/admin/mail', 'E-Mail an Mitglieder', 'an alle, Kandidaten oder einzelne')}
+    ${r('#/admin/abwesenheiten', 'Abwesenheiten', 'Ferien, Krankheit etc. für alle Mitglieder')}
+    ${r('#/admin/shop', 'Shop verwalten', 'Artikel, Bilder, Bestellungen')}
+    ${r('#/dokumente', 'Dokumente', 'hochladen und verwalten')}
+    ${r('#/admin/einstellungen', 'Einstellungen', 'Veto-Regeln, Antwortadresse, Shop, QR-Rechnung')}
     ${r('#/admin/codes', 'Persönliche Codes & Links', 'per E-Mail, WhatsApp oder SMS senden, neu erzeugen')}
     ${r('#/admin/import', 'Excel-Import', 'Export von ambassadorclub.net einlesen')}
     ${r('#/admin/event/neu', 'Anlass erfassen', 'einzelner Termin')}
@@ -646,6 +657,10 @@ async function viewAdminMember(id) {
   shell(isNew ? (isCand(m) ? 'Neuer Kandidat' : 'Neues Mitglied') : fullName(m), `
     ${!isNew && isCand(m) ? `<a class="btn p block" href="#/admin/kandidaten" style="margin-bottom:10px">Veto-Verfahren & Teilnahmen ›</a>` : ''}
     ${!isNew ? `<div class="btns" style="margin-bottom:10px"><button class="btn" id="sendlink">Login-Link senden</button>${m.email ? `<a class="btn" href="#/admin/mail/${m.id}">E-Mail</a>` : ''}<a class="btn" href="#/admin/abwesenheit/${m.id}">Abwesenheiten</a></div>` : ''}
+    ${!isNew && (isCand(m) || m.lebenslauf_path) ? `<div class="card"><b>Lebenslauf (PDF)</b>
+      ${m.lebenslauf_path ? `<div class="btns" style="margin:8px 0"><button class="btn sm" id="cv_open">📄 Lebenslauf öffnen</button><button class="btn sm ghost" id="cv_del" style="color:var(--no)">Löschen</button></div>` : '<p class="small muted">Noch kein Lebenslauf hochgeladen.</p>'}
+      <label>${m.lebenslauf_path ? 'Ersetzen durch' : 'PDF hochladen'} (max. 10 MB)</label><input type="file" id="cv_file" accept="application/pdf,.pdf">
+      <p class="small muted">Den Lebenslauf sehen alle Mitglieder (z.B. beim Veto), nicht aber Kandidaten.</p></div>` : ''}
     <div class="card">
     <div class="grid2"><div><label>Status</label><select id="f_status"><option value="mitglied" ${!isCand(m) ? 'selected' : ''}>Mitglied</option><option value="kandidat" ${isCand(m) ? 'selected' : ''}>Kandidat</option></select></div>
       <div id="cand_since"><label>Kandidat seit</label><input id="f_kandidat_seit" type="date" value="${h(m.kandidat_seit || '')}"></div>
@@ -660,6 +675,11 @@ async function viewAdminMember(id) {
   const syncCand = () => { const c = val('f_status') === 'kandidat'; document.getElementById('cand_since').style.display = c ? '' : 'none'; document.getElementById('cand_goetti').style.display = c ? '' : 'none'; };
   document.getElementById('f_status').onchange = syncCand; syncCand();
   const sl = document.getElementById('sendlink'); if (sl) sl.onclick = () => sendLinkSheet(m);
+  const cvo = document.getElementById('cv_open'); if (cvo) cvo.onclick = () => openCV(m);
+  const cvf = document.getElementById('cv_file');
+  if (cvf) cvf.onchange = async () => { try { toast('Lädt hoch…'); await uploadCV(m, cvf.files[0]); await loadBase(); toast('Lebenslauf gespeichert'); viewAdminMember(id); } catch (e) { err(e); } };
+  const cvd = document.getElementById('cv_del');
+  if (cvd) cvd.onclick = async () => { if (!confirm('Lebenslauf löschen?')) return; try { await sb.storage.from('lebenslauf').remove([m.lebenslauf_path]); await q(sb.from('members').update({ lebenslauf_path: null }).eq('id', m.id)); await loadBase(); viewAdminMember(id); } catch (e) { err(e); } };
   document.getElementById('save').onclick = async () => {
     const cand = val('f_status') === 'kandidat';
     const d = { ...readFields([...PROFILE_FIELDS, ...ADMIN_FIELDS]), show_birthday: val('f_show_birthday'), ehrenmitglied: val('f_ehrenmitglied'), aktiv: val('f_aktiv'),
@@ -922,7 +942,10 @@ async function viewAdminTerm(id) {
 }
 
 /* ---------- Kandidaten & Veto ---------- */
-const VETO2_AB = 5; // Veto 2 nach 5–6 Teilnahmen
+/* Einstellbar unter Admin → Einstellungen */
+const veto2Min = () => Math.max(1, +setv('veto2_min_teilnahmen', 5) || 5);
+const vetoDays = () => Math.max(1, +setv('veto_frist_tage', 14) || 14);
+const teiln = (c, parts) => (parts[c.id]?.length || 0) + (+c.teilnahmen_extra || 0);
 /* Teilnahmen an vergangenen, nicht abgesagten AC-Thun-Anlässen pro Person */
 async function participations(ids) {
   const out = Object.fromEntries(ids.map((i) => [i, []]));
@@ -966,17 +989,18 @@ async function viewAdminCandidates() {
   let html = `<a class="btn p block" href="#/admin/m/neu-kandidat" style="margin-bottom:10px">+ Neuer Kandidat</a>
     <details class="card small"><summary><b>Ablauf</b> ›</summary><ol style="margin:8px 0 0;padding-left:20px">
       <li>Kandidat mit Götti erfassen.</li><li><b>Veto 1</b> starten → alle Mitglieder erhalten eine Mail und können in der App ein Veto einlegen.</li>
-      <li>Kein Veto → «Bestanden» → Kandidat mit seinem Login-Link einladen.</li><li>Nach ${VETO2_AB}–6 Teilnahmen <b>Veto 2</b> starten (Veto nur mit Begründung).</li>
+      <li>Kein Veto → «Bestanden» → Kandidat mit seinem Login-Link einladen.</li><li>Nach ${veto2Min()} Teilnahmen <b>Veto 2</b> starten (Veto nur mit Begründung).</li>
       <li>Kein Veto → «Bestanden» → «Als Mitglied aufnehmen».</li></ol></details>`;
   if (!cands.length) html += '<div class="empty">Zurzeit keine Kandidaten.</div>';
   for (const c of cands) {
     const rs = rounds.filter((r) => r.candidate_id === c.id);
     const p = candPhase(rs);
-    const n = parts[c.id].length;
+    const n = teiln(c, parts);
     const g = S.byId[c.goetti_id];
     html += `<div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="av cand">${h(initials(c))}</div>
       <div class="grow" style="flex:1"><a href="#/admin/m/${c.id}" style="color:inherit"><b>${h(fullName(c))}</b></a><div class="small muted">Götti: ${g ? h(fullName(g)) : '<span style="color:var(--no)">fehlt</span>'}${c.kandidat_seit ? ' · seit ' + fDay(c.kandidat_seit) : ''}</div></div></div>
-      <div style="margin:8px 0">${phaseChip(p)} <span class="chip ${n >= VETO2_AB ? 'ok' : ''}">${n} Teilnahme${n === 1 ? '' : 'n'}</span></div>
+      <div style="margin:8px 0">${phaseChip(p)} <span class="chip ${n >= veto2Min() ? 'ok' : ''}">${n} Teilnahme${n === 1 ? '' : 'n'}${+c.teilnahmen_extra ? ` (davon ${c.teilnahmen_extra} manuell)` : ''}</span></div>
+      <div class="btns" style="margin-bottom:6px"><button class="btn sm ghost" data-extra="${c.id}">Teilnahmen anpassen</button>${c.lebenslauf_path ? `<button class="btn sm ghost" data-cv="${c.id}">📄 Lebenslauf</button>` : `<a class="btn sm ghost" href="#/admin/m/${c.id}">Lebenslauf hochladen</a>`}</div>
       ${n ? `<details class="small"><summary class="muted">Teilnahmen anzeigen ›</summary>${parts[c.id].map((e) => `<div>${fmt(e.starts_at, { day: 'numeric', month: 'short', year: 'numeric' })} – ${h(evTitle(e))}</div>`).join('')}</details>` : ''}`;
     if (p.key === 'open') {
       const vs = votes.filter((v) => v.round_id === p.round.id);
@@ -984,10 +1008,10 @@ async function viewAdminCandidates() {
       html += `<div class="card" style="background:var(--bg);margin:10px 0 6px"><b>Veto ${p.round.stufe}</b> · Frist ${fDate(p.round.deadline)} ${expired ? '<span class="chip gold">abgelaufen</span>' : ''}
         <div style="margin-top:6px">${vs.length ? `<b style="color:var(--no)">${vs.length} Veto${vs.length > 1 ? 's' : ''}:</b>${vs.map((v) => `<div class="small">• ${h(S.byId[v.member_id] ? fullName(S.byId[v.member_id]) : '?')}${v.reason ? ': ' + h(v.reason) : ''}</div>`).join('')}` : '<span class="small muted">Bisher kein Veto eingegangen.</span>'}</div>
         <div class="btns" style="margin-top:8px"><button class="btn sm ok" data-close="${p.round.id}" data-st="bestanden">Bestanden</button><button class="btn sm no" data-close="${p.round.id}" data-st="abgelehnt">Abgelehnt</button>
-          <button class="btn sm ghost" data-remind="${p.round.id}">Erinnerung</button><button class="btn sm ghost" data-close="${p.round.id}" data-st="abgebrochen">Abbrechen</button></div></div>`;
+          <button class="btn sm ghost" data-remind="${p.round.id}">Erinnerung</button><button class="btn sm ghost" data-frist="${p.round.id}">Frist ändern</button><button class="btn sm ghost" data-close="${p.round.id}" data-st="abgebrochen">Abbrechen</button></div></div>`;
     } else if (p.key === 'new') html += `<div class="btns"><button class="btn p sm" data-start="${c.id}" data-stufe="1">Veto 1 starten</button></div>`;
-    else if (p.key === 'v1ok') html += `${n >= VETO2_AB ? `<p class="small" style="color:var(--ok)">${n} Teilnahmen – Veto 2 kann gestartet werden.</p>` : `<p class="small muted">Veto 2 nach ${VETO2_AB}–6 Teilnahmen.</p>`}
-      <div class="btns"><button class="btn sm ${n >= VETO2_AB ? 'p' : ''}" data-start="${c.id}" data-stufe="2">Veto 2 starten</button><button class="btn sm ghost" data-link="${c.id}">Login-Link senden</button></div>`;
+    else if (p.key === 'v1ok') html += `${n >= veto2Min() ? `<p class="small" style="color:var(--ok)">${n} Teilnahmen – Veto 2 kann gestartet werden.</p>` : `<p class="small muted">Veto 2 nach ${veto2Min()} Teilnahmen.</p>`}
+      <div class="btns"><button class="btn sm ${n >= veto2Min() ? 'p' : ''}" data-start="${c.id}" data-stufe="2">Veto 2 starten</button><button class="btn sm ghost" data-link="${c.id}">Login-Link senden</button></div>`;
     else if (p.key === 'v2ok') html += `<div class="btns"><button class="btn p sm" data-admit="${c.id}">Als Mitglied aufnehmen</button></div>`;
     else if (p.key === 'rejected') html += `<div class="btns"><button class="btn sm ghost" data-block="${c.id}">Zugang sperren</button><button class="btn sm ghost" data-start="${c.id}" data-stufe="${rs.some((r) => r.stufe === 1 && r.status === 'bestanden') ? 2 : 1}">Neues Veto starten</button></div>`;
     const closed = rs.filter((r) => r.status !== 'offen');
@@ -999,17 +1023,17 @@ async function viewAdminCandidates() {
   $app.querySelectorAll('[data-start]').forEach((b) => b.onclick = async () => {
     const c = cById(b.dataset.start); const stufe = +b.dataset.stufe;
     if (!c.goetti_id && !confirm('Für diesen Kandidaten ist kein Götti erfasst. Trotzdem starten?')) return;
-    const days = prompt(`Veto ${stufe} für ${fullName(c)} starten.\nFrist in Tagen:`, '14'); if (!days) return;
+    const days = prompt(`Veto ${stufe} für ${fullName(c)} starten.\nFrist in Tagen:`, String(vetoDays())); if (!days) return;
     const dl = new Date(); dl.setDate(dl.getDate() + Math.max(1, Math.round(+days) || 14)); dl.setHours(23, 59, 0, 0);
     try {
       const r = await q(sb.from('veto_rounds').insert({ candidate_id: c.id, stufe, deadline: dl.toISOString(), started_by: S.me.id }).select().single());
-      S.mailDraft = vetoMailDraft(c, r, parts[c.id].length);
+      S.mailDraft = vetoMailDraft(c, r, teiln(c, parts));
       toast(`Veto ${stufe} gestartet – jetzt die Mail an die Mitglieder senden`); location.hash = '#/admin/mail';
     } catch (e) { err(e); }
   });
   $app.querySelectorAll('[data-remind]').forEach((b) => b.onclick = () => {
     const r = rounds.find((x) => x.id === b.dataset.remind); const c = cById(r.candidate_id);
-    const d = vetoMailDraft(c, r, parts[c.id].length); d.subject = 'Erinnerung – ' + d.subject;
+    const d = vetoMailDraft(c, r, teiln(c, parts)); d.subject = 'Erinnerung – ' + d.subject;
     S.mailDraft = d; location.hash = '#/admin/mail';
   });
   $app.querySelectorAll('[data-close]').forEach((b) => b.onclick = async () => {
@@ -1026,6 +1050,22 @@ async function viewAdminCandidates() {
     } catch (e) { err(e); }
   });
   $app.querySelectorAll('[data-link]').forEach((b) => b.onclick = () => sendLinkSheet(cById(b.dataset.link)));
+  $app.querySelectorAll('[data-cv]').forEach((b) => b.onclick = () => openCV(cById(b.dataset.cv)));
+  $app.querySelectorAll('[data-extra]').forEach((b) => b.onclick = async () => {
+    const c = cById(b.dataset.extra); const auto = parts[c.id].length;
+    const v = prompt(`${fullName(c)}: ${auto} Teilnahme(n) in der App erfasst.\nZusätzliche Teilnahmen (z.B. vor der App oder nicht erfasst; negativ zum Abziehen):`, String(+c.teilnahmen_extra || 0));
+    if (v === null) return; const x = Math.round(+v);
+    if (!Number.isFinite(x)) return toast('Bitte eine Zahl eingeben');
+    try { await q(sb.from('members').update({ teilnahmen_extra: x }).eq('id', c.id)); await loadBase(); toast('Gespeichert'); viewAdminCandidates(); } catch (e) { err(e); }
+  });
+  $app.querySelectorAll('[data-frist]').forEach((b) => b.onclick = async () => {
+    const r = rounds.find((x) => x.id === b.dataset.frist);
+    const cur = new Date(r.deadline).toLocaleDateString('de-CH', { timeZone: TZ });
+    const v = prompt('Neue Frist (TT.MM.JJJJ):', cur); if (!v) return;
+    const m = v.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/); if (!m) return toast('Format: TT.MM.JJJJ');
+    const d = new Date(+m[3], +m[2] - 1, +m[1], 23, 59, 0);
+    try { await q(sb.from('veto_rounds').update({ deadline: d.toISOString() }).eq('id', r.id)); toast('Frist geändert'); viewAdminCandidates(); } catch (e) { err(e); }
+  });
   $app.querySelectorAll('[data-admit]').forEach((b) => b.onclick = () => { const c = cById(b.dataset.admit); if (confirm(`${fullName(c)} als Mitglied aufnehmen?`)) admit(c); });
   $app.querySelectorAll('[data-block]').forEach((b) => b.onclick = async () => {
     const c = cById(b.dataset.block); if (!confirm(`Zugang von ${fullName(c)} sperren? (Der Eintrag bleibt erhalten.)`)) return;
@@ -1061,12 +1101,12 @@ async function viewVeto(id) {
   const c = S.byId[r.candidate_id]; const g = c && S.byId[c.goetti_id];
   const mine = await q(sb.from('veto_votes').select('*').eq('round_id', id).eq('member_id', S.me.id).maybeSingle());
   const openNow = r.status === 'offen' && new Date(r.deadline) > new Date();
-  const n = r.stufe === 2 && c ? (await participations([c.id]))[c.id].length : null;
+  const n = r.stufe === 2 && c ? teiln(c, await participations([c.id])) : null;
   let html = `<div class="hero"><div class="small" style="opacity:.8">Veto ${r.stufe} · ${r.stufe === 1 ? 'Einladung als Kandidat' : 'Aufnahme als Mitglied'}</div>
       <div style="font-size:21px;font-weight:700;margin:2px 0 6px">${h(c ? fullName(c) : '?')}</div><div>${h([c?.beruf, c?.firma, c?.ort].filter(Boolean).join(' · '))}</div>
       <div style="margin-top:8px"><span class="chip">Frist: ${fDate(r.deadline)}</span>${openNow ? '' : ' <span class="chip">abgeschlossen</span>'}</div></div>
     <div class="card"><dl class="kv">${g ? `<dt>Götti</dt><dd><a href="#/m/${g.id}">${h(fullName(g))}</a></dd>` : ''}${c?.kandidat_seit ? `<dt>Kandidat seit</dt><dd>${fDay(c.kandidat_seit)}</dd>` : ''}${n !== null ? `<dt>Teilnahmen</dt><dd>${n} Anlässe</dd>` : ''}</dl>
-      ${c ? `<a href="#/m/${c.id}" class="small">Profil ansehen ›</a>` : ''}</div>
+      <div class="btns" style="margin-top:8px">${c ? `<a href="#/m/${c.id}" class="btn sm ghost">Profil ansehen</a>` : ''}${c?.lebenslauf_path ? '<button class="btn sm" id="vt_cv">📄 Lebenslauf</button>' : ''}</div></div>
     <p class="small muted">${r.stufe === 1 ? 'Geht bis zum Ablauf der Frist kein Veto ein, wird der Kandidat zu unseren Anlässen eingeladen.' : 'Geht bis zum Ablauf der Frist kein begründetes Veto ein, wird der Kandidat als Mitglied aufgenommen.'}</p>`;
   if (!openNow) html += `<div class="card">Das Verfahren ist abgeschlossen${mine ? ' – du hattest ein Veto eingelegt' : ''}.</div>`;
   else html += `<div class="card"><b>${mine ? '✋ Du hast ein Veto eingelegt' : 'Veto einlegen'}</b>
@@ -1074,6 +1114,7 @@ async function viewVeto(id) {
       <label>Begründung${r.stufe === 2 ? ' (nötig)' : ' (freiwillig)'}</label><textarea id="vt_reason" style="min-height:90px">${h(mine?.reason || '')}</textarea>
       <div class="btns" style="margin-top:10px"><button class="btn no" id="vt_save">${mine ? 'Begründung speichern' : 'Veto einlegen'}</button>${mine ? '<button class="btn ghost" id="vt_del">Veto zurückziehen</button>' : ''}</div></div>`;
   $app.querySelector('main').innerHTML = html;
+  const vcv = document.getElementById('vt_cv'); if (vcv) vcv.onclick = () => openCV(c);
   const sv = document.getElementById('vt_save');
   if (sv) sv.onclick = async () => {
     const reason = val('vt_reason');
@@ -1086,46 +1127,76 @@ async function viewVeto(id) {
 }
 
 /* ---------- Abwesenheiten ---------- */
-async function viewAbsences(id) {
-  const mid = id || S.me.id; const m = S.byId[mid];
-  if (!m || (mid !== S.me.id && !S.admin)) return (location.hash = '#/mehr');
+/* id = Mitglied (Admin), all = Übersicht aller Mitglieder (Admin), sonst eigene */
+async function viewAbsences(id, all) {
+  const mid = all ? null : (id || S.me.id); const m = mid ? S.byId[mid] : null;
+  if (all ? !S.admin : (!m || (mid !== S.me.id && !S.admin))) return (location.hash = '#/mehr');
   const self = mid === S.me.id;
-  shell(self ? 'Meine Abwesenheiten' : 'Abwesenheiten', '', { tab: 'mehr', back: true }); loading();
-  const list = await q(sb.from('absences').select('*').eq('member_id', mid).order('von', { ascending: false }));
-  const cur = list.filter((a) => a.bis >= today()).reverse(), past = list.filter((a) => a.bis < today()).slice(0, 10);
-  const row = (a) => `<div class="row"><div class="grow"><b>${h(a.grund)}</b> ${a.von === a.bis ? fDay(a.von) : fDM(a.von) + ' – ' + fDay(a.bis)}${a.notiz ? `<div class="sub">${h(a.notiz)}</div>` : ''}</div><button class="btn sm ghost" data-del="${a.id}">Löschen</button></div>`;
-  $app.querySelector('main').innerHTML = `${self ? '' : `<p><b>${h(fullName(m))}</b></p>`}
-    <div class="card"><b>Abwesenheit eintragen</b>
+  shell(all ? 'Abwesenheiten' : self ? 'Meine Abwesenheiten' : 'Abwesenheiten', '', { tab: 'mehr', back: true }); loading();
+  let qy = sb.from('absences').select('*');
+  if (mid) qy = qy.eq('member_id', mid); else qy = qy.gte('bis', new Date(Date.now() - 90 * 864e5).toLocaleDateString('sv-SE', { timeZone: TZ }));
+  const list = await q(qy.order('von', { ascending: false }));
+  const cur = list.filter((a) => a.bis >= today()).reverse(), past = list.filter((a) => a.bis < today()).slice(0, all ? 50 : 10);
+  const who = (a) => all ? `<b>${h(S.byId[a.member_id] ? fullName(S.byId[a.member_id]) : '?')}</b> · ` : '';
+  const row = (a) => `<div class="row"><div class="grow">${who(a)}<b>${h(a.grund)}</b> ${a.von === a.bis ? fDay(a.von) : fDM(a.von) + ' – ' + fDay(a.bis)}${a.notiz ? `<div class="sub">${h(a.notiz)}</div>` : ''}</div>
+    <button class="btn sm ghost" data-edit="${a.id}">Bearbeiten</button><button class="btn sm ghost" data-del="${a.id}" aria-label="Löschen">✕</button></div>`;
+  const ms = S.members.filter((x) => x.aktiv).sort(sortName);
+  $app.querySelector('main').innerHTML = `${!all && !self ? `<p><b>${h(fullName(m))}</b> · <a href="#/admin/abwesenheiten">alle Abwesenheiten ›</a></p>` : ''}
+    ${all ? '<p class="small muted">Abwesenheiten aller Mitglieder erfassen, ändern und löschen (laufende, geplante und die letzten 90 Tage).</p>' : ''}
+    <div class="card" id="ab_form"><b id="ab_head">Abwesenheit eintragen</b>
+      ${all ? `<label>Mitglied</label><select id="ab_mem"><option value="">– bitte wählen –</option>${ms.map((x) => `<option value="${x.id}">${h(x.nachname + ' ' + x.vorname)}${isCand(x) ? ' (Kandidat)' : ''}</option>`).join('')}</select>` : ''}
       <div class="grid2"><div><label>Von</label><input id="ab_von" type="date" value="${today()}"></div><div><label>Bis</label><input id="ab_bis" type="date" value="${today()}"></div>
         <div><label>Grund</label><select id="ab_grund">${GRUENDE.map((g) => `<option>${g}</option>`).join('')}</select></div><div><label>Notiz (optional)</label><input id="ab_notiz"></div></div>
-      <label class="check"><input type="checkbox" id="ab_auto" checked> Bei Anlässen in dieser Zeit automatisch abmelden</label>
-      <button class="btn p block" id="ab_save">Eintragen</button>
-      <p class="small muted">Während der Abwesenheit erscheinst du bei den Anlässen als «abwesend». Grund und Datum sehen alle Mitglieder.</p></div>
+      <label class="check" id="ab_auto_l"><input type="checkbox" id="ab_auto" checked> Bei Anlässen in dieser Zeit automatisch abmelden</label>
+      <div class="btns"><button class="btn p" id="ab_save">Eintragen</button><button class="btn ghost" id="ab_cancel" style="display:none">Abbrechen</button></div>
+      <p class="small muted">Während der Abwesenheit erscheint man bei den Anlässen als «abwesend». Grund und Datum sehen alle Mitglieder.</p></div>
     <h2>Aktuell & geplant</h2><div class="list">${cur.map(row).join('') || '<div class="row muted">Keine</div>'}</div>
     ${past.length ? `<h2>Vergangen</h2><div class="list">${past.map(row).join('')}</div>` : ''}`;
-  document.getElementById('ab_von').onchange = () => { if (val('ab_bis') < val('ab_von')) document.getElementById('ab_bis').value = val('ab_von'); };
-  document.getElementById('ab_save').onclick = async () => {
-    const d = { member_id: mid, von: val('ab_von'), bis: val('ab_bis'), grund: val('ab_grund'), notiz: val('ab_notiz') };
+  let editId = null;
+  const $ = (x) => document.getElementById(x);
+  const reset = () => { editId = null; $('ab_head').textContent = 'Abwesenheit eintragen'; $('ab_save').textContent = 'Eintragen'; $('ab_cancel').style.display = 'none'; $('ab_auto_l').style.display = '';
+    $('ab_von').value = today(); $('ab_bis').value = today(); $('ab_grund').value = GRUENDE[0]; $('ab_notiz').value = ''; if ($('ab_mem')) { $('ab_mem').value = ''; $('ab_mem').disabled = false; } };
+  $('ab_cancel').onclick = reset;
+  $('ab_von').onchange = () => { if (val('ab_bis') < val('ab_von')) $('ab_bis').value = val('ab_von'); };
+  $app.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => {
+    const a = list.find((x) => x.id === b.dataset.edit); editId = a.id;
+    $('ab_head').textContent = 'Abwesenheit bearbeiten'; $('ab_save').textContent = 'Änderung speichern'; $('ab_cancel').style.display = ''; $('ab_auto_l').style.display = 'none';
+    $('ab_von').value = a.von; $('ab_bis').value = a.bis; $('ab_grund').value = GRUENDE.includes(a.grund) ? a.grund : 'Andere'; $('ab_notiz').value = a.notiz || '';
+    if ($('ab_mem')) { $('ab_mem').value = a.member_id; $('ab_mem').disabled = true; }
+    $('ab_form').scrollIntoView?.({ behavior: 'smooth' });
+  });
+  $('ab_save').onclick = async () => {
+    const target = all ? (editId ? list.find((x) => x.id === editId).member_id : val('ab_mem')) : mid;
+    const d = { von: val('ab_von'), bis: val('ab_bis'), grund: val('ab_grund'), notiz: val('ab_notiz') };
+    if (!target) return toast('Mitglied wählen');
     if (!d.von || !d.bis) return toast('Von und Bis angeben');
     if (d.bis < d.von) return toast('«Bis» liegt vor «Von»');
     try {
-      await q(sb.from('absences').insert(d));
       let n = 0;
-      if (val('ab_auto')) {
-        const from = new Date(d.von + 'T00:00:00').toISOString(), to = new Date(d.bis + 'T23:59:59').toISOString();
-        const evs = (await q(sb.from('events').select('id,title,cancelled').gte('starts_at', from).lte('starts_at', to))).filter((e) => !e.cancelled && (!isCand(m) || catOf(e) === 'club'));
-        const have = evs.length ? await q(sb.from('registrations').select('event_id').eq('member_id', mid).in('event_id', evs.map((e) => e.id))) : [];
-        const neu = evs.filter((e) => !have.some((r) => r.event_id === e.id)).map((e) => ({ event_id: e.id, member_id: mid, status: 'ab', comment: d.grund }));
-        if (neu.length) { await q(sb.from('registrations').insert(neu)); n = neu.length; }
+      if (editId) await q(sb.from('absences').update(d).eq('id', editId));
+      else {
+        await q(sb.from('absences').insert({ ...d, member_id: target }));
+        if (val('ab_auto')) n = await autoAbmelden(S.byId[target], d);
       }
       S.absences = await q(sb.from('absences').select('*').gte('bis', new Date(Date.now() - 2 * 864e5).toLocaleDateString('sv-SE', { timeZone: TZ })).order('von'));
-      toast('Eingetragen' + (n ? ` – bei ${n} Anlass${n > 1 ? 'en' : ''} abgemeldet` : '')); viewAbsences(id);
+      toast((editId ? 'Gespeichert' : 'Eingetragen') + (n ? ` – bei ${n} Anlass${n > 1 ? 'en' : ''} abgemeldet` : '')); viewAbsences(id, all);
     } catch (e) { err(e); }
   };
   $app.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => {
     if (!confirm('Abwesenheit löschen? (Abmeldungen bei Anlässen bleiben bestehen.)')) return;
-    try { await q(sb.from('absences').delete().eq('id', b.dataset.del)); S.absences = S.absences.filter((a) => a.id !== b.dataset.del); viewAbsences(id); } catch (e) { err(e); }
+    try { await q(sb.from('absences').delete().eq('id', b.dataset.del)); S.absences = S.absences.filter((a) => a.id !== b.dataset.del); viewAbsences(id, all); } catch (e) { err(e); }
   });
+}
+/* Bei Anlässen im Zeitraum ohne Antwort automatisch abmelden; liefert Anzahl */
+async function autoAbmelden(m, d) {
+  if (!m) return 0;
+  const from = new Date(d.von + 'T00:00:00').toISOString(), to = new Date(d.bis + 'T23:59:59').toISOString();
+  const evs = (await q(sb.from('events').select('id,title,cancelled').gte('starts_at', from).lte('starts_at', to))).filter((e) => !e.cancelled && (!isCand(m) || catOf(e) === 'club'));
+  if (!evs.length) return 0;
+  const have = await q(sb.from('registrations').select('event_id').eq('member_id', m.id).in('event_id', evs.map((e) => e.id)));
+  const neu = evs.filter((e) => !have.some((r) => r.event_id === e.id)).map((e) => ({ event_id: e.id, member_id: m.id, status: 'ab', comment: d.grund }));
+  if (neu.length) await q(sb.from('registrations').insert(neu));
+  return neu.length;
 }
 
 /* ---------- E-Mail an Mitglieder ---------- */
@@ -1146,7 +1217,7 @@ async function viewAdminMail(preId) {
     <p class="small" id="ml_cnt"></p>
     <label>Betreff</label><input id="ml_subj" value="${h(draft.subject || '')}">
     <label>Text</label><textarea id="ml_text" style="min-height:240px">${h(draft.text || `Lieber {vorname}\n\n\n\nHerzliche Grüsse\n${S.me.vorname}`)}</textarea>
-    <p class="small muted">Platzhalter: {vorname} {nachname} {link} (persönlicher Login-Link). Absender ist ${h(CFG.clubName)}; Antworten gehen an ${h(S.me.email || 'dich')}.</p>
+    <p class="small muted">Platzhalter: {vorname} {nachname} {link} (persönlicher Login-Link). Absender ist ${h(CFG.clubName)}; Antworten gehen an ${h(setv('mail_reply_to') || S.me.email || 'dich')} (änderbar unter Einstellungen).</p>
     <div class="btns"><button class="btn" id="ml_test">Testmail an mich</button><button class="btn p" id="ml_go">Senden</button></div>
     <div id="ml_res"></div>
     <button class="btn ghost block" id="ml_bcc" style="margin-top:10px">Stattdessen im eigenen Mailprogramm öffnen (BCC)</button>
@@ -1224,6 +1295,274 @@ async function sendLinkSheet(m, code) {
   };
 }
 
+/* ---------- Dateien (Supabase Storage) ---------- */
+const isStandalone = () => window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+const safeName = (n) => String(n || 'datei').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w.-]+/g, '_').slice(-80);
+const fSize = (b) => !b ? '' : b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+/* Öffnet eine private Datei über eine zeitlich begrenzte Adresse. In der iPhone-Web-App mit Zwischenschritt (Popup-Sperre). */
+async function openStorage(bucket, path, title) {
+  const direct = !isStandalone();
+  const w = direct ? window.open('', '_blank') : null;
+  try {
+    const { data, error } = await sb.storage.from(bucket).createSignedUrl(path, 900);
+    if (error) throw error;
+    if (w) { w.location.href = data.signedUrl; return; }
+    const ov = document.createElement('div'); ov.className = 'ov';
+    ov.innerHTML = `<div class="card sheet"><b>${h(title || 'Datei')}</b><div style="display:grid;gap:8px;margin-top:10px">
+      <a class="btn p block" href="${h(data.signedUrl)}" target="_blank" rel="noopener">Öffnen</a><button class="btn ghost block" id="fo_x">Schliessen</button></div></div>`;
+    document.body.appendChild(ov);
+    ov.onclick = (e) => { if (e.target === ov || e.target.id === 'fo_x' || e.target.tagName === 'A') setTimeout(() => ov.remove(), 50); };
+  } catch (e) { if (w) w.close(); err(e); }
+}
+const openCV = (m) => m?.lebenslauf_path ? openStorage('lebenslauf', m.lebenslauf_path, 'Lebenslauf ' + fullName(m)) : toast('Kein Lebenslauf hinterlegt');
+async function uploadCV(m, file) {
+  if (!file) return;
+  if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) return toast('Bitte eine PDF-Datei wählen');
+  if (file.size > 10485760) return toast('Die Datei ist grösser als 10 MB');
+  const path = `${m.id}/${Date.now()}.pdf`;
+  const { error } = await sb.storage.from('lebenslauf').upload(path, file, { contentType: 'application/pdf', upsert: false });
+  if (error) throw error;
+  const old = m.lebenslauf_path;
+  await q(sb.from('members').update({ lebenslauf_path: path }).eq('id', m.id));
+  if (old) await sb.storage.from('lebenslauf').remove([old]);
+}
+
+/* ---------- Einstellungen (Admin) ---------- */
+async function viewAdminSettings() {
+  const v = (k, d = '') => h(setv(k, d) ?? '');
+  shell('Einstellungen', `<div class="card"><b>Kandidaten & Veto</b>
+      <div class="grid2"><div><label>Teilnahmen bis Veto 2</label><input id="s_veto2" type="number" min="1" max="20" value="${v('veto2_min_teilnahmen', 5)}"></div>
+        <div><label>Standard-Frist Veto (Tage)</label><input id="s_frist" type="number" min="1" max="90" value="${v('veto_frist_tage', 14)}"></div></div>
+      <p class="small muted">Die Frist kann beim Start und bei laufenden Verfahren («Frist ändern») auch einzeln angepasst werden; Teilnahmen pro Kandidat unter «Teilnahmen anpassen».</p></div>
+    <div class="card"><b>E-Mail</b>
+      <label>Antwortadresse für E-Mails aus der App</label><input id="s_reply" placeholder="Vorname Name <adresse@domain.ch>" value="${v('mail_reply_to')}">
+      <p class="small muted">Leer = der sendende Admin. Absender bleibt ${h(CFG.clubName)} &lt;info@ac-thun.ch&gt;.</p></div>
+    <div class="card"><b>Shop</b>
+      <label>Bestellungen gehen an</label><input id="s_shop" placeholder="Kassier <kassier@…>" value="${v('shop_email')}">
+      <p class="small muted">Leer = aktuelles Vorstandsamt «Kassier», sonst die Antwortadresse.</p>
+      <b style="display:block;margin-top:12px">QR-Rechnung (Zahlungsempfänger)</b>
+      <label>IBAN (normale IBAN, keine QR-IBAN)</label><input id="s_iban" placeholder="CH.. .... .... .... .... ." value="${v('qr_iban')}">
+      <label>Name</label><input id="s_qname" value="${v('qr_name', CFG.clubName)}">
+      <label>Strasse und Nr.</label><input id="s_qstr" value="${v('qr_strasse')}">
+      <div class="grid2"><div><label>PLZ</label><input id="s_qplz" value="${v('qr_plz')}"></div><div><label>Ort</label><input id="s_qort" value="${v('qr_ort')}"></div></div>
+      <p class="small muted">Ohne IBAN wird keine QR-Rechnung angezeigt; der Kassier meldet sich dann selbst.</p></div>
+    <button class="btn p block" id="s_save">Speichern</button>`, { tab: 'mehr', back: true });
+  document.getElementById('s_save').onclick = async () => {
+    const iban = (val('s_iban') || '').replace(/\s/g, '').toUpperCase();
+    if (iban && !/^(CH|LI)\d{19}$/.test(iban)) return toast('IBAN prüfen (CH + 19 Ziffern)');
+    if (iban && +iban.slice(4, 9) >= 30000 && +iban.slice(4, 9) <= 31999) return toast('Das ist eine QR-IBAN – bitte die normale IBAN verwenden');
+    const rows = { veto2_min_teilnahmen: Math.max(1, +val('s_veto2') || 5), veto_frist_tage: Math.max(1, +val('s_frist') || 14), mail_reply_to: val('s_reply'), shop_email: val('s_shop'),
+      qr_iban: iban || null, qr_name: val('s_qname'), qr_strasse: val('s_qstr'), qr_plz: val('s_qplz'), qr_ort: val('s_qort') };
+    try {
+      await q(sb.from('settings').upsert(Object.entries(rows).map(([key, value]) => ({ key, value, updated_at: new Date().toISOString() })), { onConflict: 'key' }));
+      Object.assign(S.settings, rows); toast('Gespeichert');
+    } catch (e) { err(e); }
+  };
+}
+
+/* ---------- Dokumente ---------- */
+const DOC_CATS = ['Statuten & Reglemente', 'Protokolle', 'Jahresprogramm', 'Formulare', 'Diverses'];
+async function viewDocuments() {
+  shell('Dokumente', '', { tab: 'mehr', back: true }); loading();
+  const docs = await q(sb.from('documents').select('*').order('created_at', { ascending: false }));
+  const icon = (d) => /pdf/.test(d.mime || d.file_name) ? '📕' : /image/.test(d.mime || '') ? '🖼️' : /sheet|excel|xls/.test(d.mime || d.file_name) ? '📊' : /word|doc/.test(d.mime || d.file_name) ? '📘' : '📄';
+  let html = '';
+  if (S.admin) html += `<details class="card" ${docs.length ? '' : 'open'}><summary><b>+ Dokument hochladen</b> ›</summary>
+    <label>Datei (max. 25 MB)</label><input type="file" id="dc_file">
+    <label>Titel</label><input id="dc_title" placeholder="z.B. Statuten 2026">
+    <label>Kategorie</label><select id="dc_cat">${DOC_CATS.map((c) => `<option>${c}</option>`).join('')}</select>
+    <label class="check"><input type="checkbox" id="dc_cand"> auch für Kandidaten sichtbar</label>
+    <button class="btn p block" id="dc_up">Hochladen</button></details>`;
+  const cats = [...DOC_CATS, ...new Set(docs.map((d) => d.kategorie).filter((c) => !DOC_CATS.includes(c)))];
+  for (const c of cats) {
+    const ds = docs.filter((d) => d.kategorie === c); if (!ds.length) continue;
+    html += `<h2>${h(c)}</h2><div class="list">${ds.map((d) => `<div class="row"><a href="#" data-open="${d.id}" class="row" style="padding:0;border:0;flex:1;min-width:0">
+      <div class="av" style="background:var(--bg);font-size:20px">${icon(d)}</div><div class="grow"><b>${h(d.title)}</b><div class="sub">${[fmt(d.created_at, { day: 'numeric', month: 'short', year: 'numeric' }), fSize(d.size), S.admin && d.fuer_kandidaten ? 'auch Kandidaten' : ''].filter(Boolean).map(h).join(' · ')}</div></div></a>
+      ${S.admin ? `<button class="btn sm ghost" data-del="${d.id}" aria-label="Löschen">✕</button>` : ''}</div>`).join('')}</div>`;
+  }
+  if (!docs.length) html += '<div class="empty">Noch keine Dokumente.</div>';
+  $app.querySelector('main').innerHTML = html;
+  $app.querySelectorAll('[data-open]').forEach((a) => a.onclick = (e) => { e.preventDefault(); const d = docs.find((x) => x.id === a.dataset.open); openStorage('dokumente', d.path, d.title); });
+  $app.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => {
+    const d = docs.find((x) => x.id === b.dataset.del); if (!confirm(`«${d.title}» löschen?`)) return;
+    try { await sb.storage.from('dokumente').remove([d.path]); await q(sb.from('documents').delete().eq('id', d.id)); viewDocuments(); } catch (e) { err(e); }
+  });
+  const f = document.getElementById('dc_file');
+  if (f) {
+    f.onchange = () => { const t = document.getElementById('dc_title'); if (f.files[0] && !t.value) t.value = f.files[0].name.replace(/\.[^.]+$/, ''); };
+    document.getElementById('dc_up').onclick = async () => {
+      const file = f.files[0]; const title = val('dc_title');
+      if (!file) return toast('Datei wählen'); if (!title) return toast('Titel angeben');
+      if (file.size > 26214400) return toast('Die Datei ist grösser als 25 MB');
+      const btn = document.getElementById('dc_up'); btn.disabled = true; btn.textContent = 'Lädt hoch…';
+      try {
+        const path = `${Date.now()}-${safeName(file.name)}`;
+        const { error } = await sb.storage.from('dokumente').upload(path, file, { contentType: file.type || 'application/octet-stream', upsert: false });
+        if (error) throw error;
+        await q(sb.from('documents').insert({ title, kategorie: val('dc_cat'), path, file_name: file.name, mime: file.type, size: file.size, fuer_kandidaten: val('dc_cand'), uploaded_by: S.me.id }));
+        toast('Hochgeladen'); viewDocuments();
+      } catch (e) { err(e); btn.disabled = false; btn.textContent = 'Hochladen'; }
+    };
+  }
+}
+
+/* ---------- Shop ---------- */
+const chf = (n) => 'CHF ' + (+n || 0).toFixed(2);
+const imgUrl = (p) => p ? sb.storage.from('shop').getPublicUrl(p).data.publicUrl : '';
+const varsOf = (p) => String(p.varianten || '').split(',').map((s) => s.trim()).filter(Boolean);
+const ORDER_ST = { neu: ['offen', 'gold'], bezahlt: ['bezahlt', 'ok'], geliefert: ['geliefert', 'ok'], storniert: ['storniert', 'no'] };
+const orderChip = (o) => `<span class="chip ${ORDER_ST[o.status]?.[1] || ''}">${ORDER_ST[o.status]?.[0] || h(o.status)}</span>`;
+const loadCart = () => { try { return JSON.parse(localStorage.getItem('ac_cart') || '[]'); } catch { return []; } };
+const saveCart = (c) => { try { localStorage.setItem('ac_cart', JSON.stringify(c)); } catch { /* */ } };
+
+async function viewShop() {
+  shell('Shop', '', { tab: 'mehr', back: true }); loading();
+  const prods = await q(sb.from('products').select('*').eq('aktiv', true).order('sort'));
+  prods.sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name, 'de'));
+  let cart = loadCart().filter((c) => prods.some((p) => p.id === c.product_id));
+  const draw = () => {
+    const total = cart.reduce((s, c) => s + (prods.find((p) => p.id === c.product_id)?.preis || 0) * c.menge, 0);
+    let html = `<div class="btns" style="margin-bottom:10px"><a class="btn sm ghost" href="#/shop/bestellungen">Meine Bestellungen ›</a>${S.admin ? '<a class="btn sm ghost" href="#/admin/shop">Shop verwalten</a>' : ''}</div>`;
+    html += prods.map((p) => `<div class="card shop-item">${p.bild_path ? `<img src="${h(imgUrl(p.bild_path))}" alt="">` : '<div class="noimg">🛍️</div>'}
+      <div class="grow"><b>${h(p.name)}</b><div class="price">${chf(p.preis)}</div>${p.beschreibung ? `<div class="small muted" style="white-space:pre-wrap">${h(p.beschreibung)}</div>` : ''}
+        <div class="btns" style="margin-top:8px;align-items:center">${varsOf(p).length ? `<select id="v_${p.id}" style="width:auto">${varsOf(p).map((x) => `<option>${h(x)}</option>`).join('')}</select>` : ''}
+          <input id="n_${p.id}" type="number" min="1" max="99" value="1" style="width:64px"><button class="btn sm p" data-add="${p.id}">In den Warenkorb</button></div></div></div>`).join('') || '<div class="empty">Zurzeit keine Artikel im Shop.</div>';
+    if (cart.length) html += `<div class="card cart" id="cart"><b>Warenkorb</b>${cart.map((c, i) => { const p = prods.find((x) => x.id === c.product_id);
+        return `<div class="row" style="padding:6px 0"><div class="grow">${c.menge} × ${h(p.name)}${c.variante ? ' (' + h(c.variante) + ')' : ''}<div class="sub">${chf(p.preis * c.menge)}</div></div><button class="btn sm ghost" data-rm="${i}" aria-label="Entfernen">✕</button></div>`; }).join('')}
+      <div style="display:flex;justify-content:space-between;font-weight:700;margin:8px 0"><span>Total</span><span>${chf(total)}</span></div>
+      <label>Bemerkung (optional)</label><input id="sh_note" placeholder="z.B. Übergabe am nächsten Lunch">
+      <button class="btn p block" id="sh_order" style="margin-top:10px">Verbindlich bestellen</button>
+      <p class="small muted">Die Bestellung geht an den Kassier; du erhältst eine Bestätigung per E-Mail.</p></div>`;
+    $app.querySelector('main').innerHTML = html;
+    $app.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => {
+      const id = b.dataset.add; const variante = val('v_' + id); const menge = Math.max(1, Math.min(99, +val('n_' + id) || 1));
+      const ex = cart.find((c) => c.product_id === id && (c.variante || null) === (variante || null));
+      if (ex) ex.menge = Math.min(99, ex.menge + menge); else cart.push({ product_id: id, variante, menge });
+      saveCart(cart); toast('Im Warenkorb'); draw(); document.getElementById('cart')?.scrollIntoView?.({ behavior: 'smooth' });
+    });
+    $app.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { cart.splice(+b.dataset.rm, 1); saveCart(cart); draw(); });
+    const ob = document.getElementById('sh_order');
+    if (ob) ob.onclick = async () => {
+      if (!confirm(`Verbindlich bestellen für ${chf(total)}?`)) return;
+      ob.disabled = true; ob.textContent = 'Wird bestellt…';
+      const { data, error } = await sb.functions.invoke('shop-order', { body: { items: cart, bemerkung: val('sh_note') } });
+      let j = data; if (error) { try { j = await error.context.json(); } catch { j = { error: error.message }; } }
+      if (j?.error) { ob.disabled = false; ob.textContent = 'Verbindlich bestellen'; return toast(j.error); }
+      cart = []; saveCart(cart);
+      const o = j.order;
+      $app.querySelector('main').innerHTML = `<div class="card" style="text-align:center"><div style="font-size:40px">✅</div><b>Danke für deine Bestellung ${o.id}!</b>
+        <p class="small muted">${j.mail?.mitglied ? 'Eine Bestätigung ist per E-Mail unterwegs.' : ''}${j.mail?.kassier ? ' Der Kassier ist informiert.' : ''}${j.mail?.error ? ' (Hinweis: ' + h(j.mail.error) + ')' : ''}</p></div>
+        ${await qrBillHtml(o.total, `Shop-Bestellung ${o.id}`)}<a class="btn block" href="#/shop/bestellungen">Meine Bestellungen</a>`;
+    };
+  };
+  draw();
+}
+
+async function viewMyOrders() {
+  shell('Meine Bestellungen', '', { tab: 'mehr', back: true }); loading();
+  const orders = await q(sb.from('orders').select('*').eq('member_id', S.me.id).order('created_at', { ascending: false }));
+  $app.querySelector('main').innerHTML = orders.map((o) => `<div class="card"><div style="display:flex;justify-content:space-between;gap:8px"><b>Bestellung ${o.id}</b>${orderChip(o)}</div>
+      <div class="small muted">${fmt(o.created_at, { day: 'numeric', month: 'long', year: 'numeric' })}</div>
+      <div class="small" style="margin:6px 0">${(o.items || []).map((l) => `${l.menge} × ${h(l.name)}${l.variante ? ' (' + h(l.variante) + ')' : ''} – ${chf(l.summe)}`).join('<br>')}</div>
+      <b>Total ${chf(o.total)}</b>${o.status === 'neu' && setv('qr_iban') ? `<div><button class="btn sm" data-qr="${o.id}" style="margin-top:8px">QR-Rechnung anzeigen</button><div id="qr_${o.id}"></div></div>` : ''}</div>`).join('')
+    || '<div class="empty">Noch keine Bestellungen.</div>';
+  $app.querySelectorAll('[data-qr]').forEach((b) => b.onclick = async () => { const o = orders.find((x) => String(x.id) === b.dataset.qr); document.getElementById('qr_' + o.id).innerHTML = await qrBillHtml(o.total, `Shop-Bestellung ${o.id}`); b.remove(); });
+}
+
+async function viewAdminShop() {
+  shell('Shop verwalten', '', { tab: 'mehr', back: true }); loading();
+  const [prods, orders] = await Promise.all([q(sb.from('products').select('*').order('sort')), q(sb.from('orders').select('*').order('created_at', { ascending: false }))]);
+  const open = orders.filter((o) => o.status === 'neu' || o.status === 'bezahlt');
+  const nm = (o) => S.byId[o.member_id] ? fullName(S.byId[o.member_id]) : '?';
+  const orow = (o) => `<div class="card"><div style="display:flex;justify-content:space-between;gap:8px"><b>${o.id} · ${h(nm(o))}</b><span>${chf(o.total)}</span></div>
+    <div class="small muted">${fmt(o.created_at, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+    <div class="small" style="margin:4px 0">${(o.items || []).map((l) => `${l.menge} × ${h(l.name)}${l.variante ? ' (' + h(l.variante) + ')' : ''}`).join(', ')}${o.bemerkung ? `<br><i>${h(o.bemerkung)}</i>` : ''}</div>
+    <select data-ost="${o.id}" style="width:auto">${Object.entries(ORDER_ST).map(([k, [l]]) => `<option value="${k}" ${o.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+  $app.querySelector('main').innerHTML = `<div class="btns" style="margin-bottom:10px"><a class="btn p" href="#/admin/produkt/neu">+ Artikel</a><a class="btn" href="#/admin/einstellungen">Einstellungen (Kassier, IBAN)</a><button class="btn" id="o_csv">Bestellungen CSV</button></div>
+    <h2>Artikel (${prods.length})</h2><div class="list">${prods.map((p) => `<a class="row" href="#/admin/produkt/${p.id}">${p.bild_path ? `<img src="${h(imgUrl(p.bild_path))}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:8px">` : '<div class="av" style="background:var(--bg)">🛍️</div>'}
+      <div class="grow"><b>${h(p.name)}</b><div class="sub">${chf(p.preis)}${varsOf(p).length ? ' · ' + h(varsOf(p).join(', ')) : ''}</div></div>${p.aktiv ? '' : '<span class="chip">ausgeblendet</span>'}<span class="muted">›</span></a>`).join('') || '<div class="row muted">Noch keine Artikel.</div>'}</div>
+    <h2>Offene Bestellungen (${open.length})</h2>${open.map(orow).join('') || '<div class="empty">Keine.</div>'}
+    ${orders.length > open.length ? `<details><summary class="muted">Erledigte Bestellungen (${orders.length - open.length}) ›</summary>${orders.filter((o) => !open.includes(o)).map(orow).join('')}</details>` : ''}`;
+  $app.querySelectorAll('[data-ost]').forEach((s) => s.onchange = async () => {
+    try { await q(sb.from('orders').update({ status: s.value, updated_at: new Date().toISOString() }).eq('id', +s.dataset.ost)); toast('Status gespeichert'); } catch (e) { err(e); }
+  });
+  document.getElementById('o_csv').onclick = () => download('AC_Thun_Bestellungen.csv', csv([['Nr', 'Datum', 'Mitglied', 'Artikel', 'Total', 'Status', 'Bemerkung'],
+    ...orders.map((o) => [o.id, fmt(o.created_at, { dateStyle: 'short' }), nm(o), (o.items || []).map((l) => `${l.menge}x ${l.name}${l.variante ? ' (' + l.variante + ')' : ''}`).join('; '), (+o.total).toFixed(2), ORDER_ST[o.status]?.[0] || o.status, o.bemerkung || ''])]), 'text/csv');
+}
+
+async function viewAdminProduct(id) {
+  const isNew = id === 'neu';
+  const p = isNew ? { aktiv: true, sort: 100, preis: '' } : await q(sb.from('products').select('*').eq('id', id).single());
+  shell(isNew ? 'Neuer Artikel' : 'Artikel bearbeiten', `<div class="card">
+    <label>Name</label><input id="p_name" value="${h(p.name || '')}">
+    <div class="grid2"><div><label>Preis (CHF)</label><input id="p_preis" type="number" min="0" step="0.05" value="${h(p.preis)}"></div><div><label>Reihenfolge</label><input id="p_sort" type="number" value="${h(p.sort)}"></div></div>
+    <label>Beschreibung</label><textarea id="p_desc">${h(p.beschreibung || '')}</textarea>
+    <label>Varianten (mit Komma getrennt, z.B. «S, M, L» – leer = keine)</label><input id="p_var" value="${h(p.varianten || '')}">
+    <label>Bild (JPG/PNG, max. 5 MB)</label>${p.bild_path ? `<img src="${h(imgUrl(p.bild_path))}" alt="" style="max-width:160px;border-radius:10px;display:block;margin:6px 0">` : ''}<input type="file" id="p_img" accept="image/*">
+    <label class="check"><input type="checkbox" id="p_aktiv" ${p.aktiv ? 'checked' : ''}> im Shop sichtbar</label>
+    <button class="btn p block" id="p_save">Speichern</button>
+    ${isNew ? '' : '<button class="btn ghost block" id="p_del" style="margin-top:8px;color:var(--no)">Löschen</button>'}</div>`, { tab: 'mehr', back: true });
+  document.getElementById('p_save').onclick = async () => {
+    const d = { name: val('p_name'), preis: Math.round((+val('p_preis') || 0) * 100) / 100, sort: +val('p_sort') || 100, beschreibung: val('p_desc'),
+      varianten: (val('p_var') || '').split(',').map((s) => s.trim()).filter(Boolean).join(', ') || null, aktiv: val('p_aktiv') };
+    if (!d.name) return toast('Name angeben');
+    const btn = document.getElementById('p_save'); btn.disabled = true;
+    try {
+      const file = document.getElementById('p_img').files[0];
+      if (file) {
+        if (file.size > 5242880) throw new Error('Bild grösser als 5 MB');
+        const path = `p/${Date.now()}-${safeName(file.name)}`;
+        const { error } = await sb.storage.from('shop').upload(path, file, { contentType: file.type, upsert: false });
+        if (error) throw error;
+        if (p.bild_path) await sb.storage.from('shop').remove([p.bild_path]);
+        d.bild_path = path;
+      }
+      isNew ? await q(sb.from('products').insert(d)) : await q(sb.from('products').update(d).eq('id', id));
+      toast('Gespeichert'); location.hash = '#/admin/shop';
+    } catch (e) { err(e); btn.disabled = false; }
+  };
+  const del = document.getElementById('p_del');
+  if (del) del.onclick = async () => {
+    if (!confirm(`«${p.name}» löschen? (Bestehende Bestellungen bleiben erhalten.) Alternative: «im Shop sichtbar» abwählen.`)) return;
+    try { if (p.bild_path) await sb.storage.from('shop').remove([p.bild_path]); await q(sb.from('products').delete().eq('id', id)); location.hash = '#/admin/shop'; } catch (e) { err(e); }
+  };
+}
+
+/* ---------- Swiss QR-Rechnung (Zahlteil vereinfacht) ---------- */
+function loadQR() {
+  if (window.qrcode) return Promise.resolve();
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js'; s.onload = res; s.onerror = () => rej(new Error('QR-Bibliothek konnte nicht geladen werden')); document.head.appendChild(s); });
+}
+/* Inhalt nach Swiss Payment Standards (SPC 0200, strukturierte Adresse «S», ohne Referenz) */
+function spcPayload({ iban, name, strasse, plz, ort, amount, message }) {
+  const cut = (s, n) => String(s || '').replace(/[\r\n]+/g, ' ').trim().slice(0, n);
+  return ['SPC', '0200', '1', iban.replace(/\s/g, ''),
+    'S', cut(name, 70), cut(strasse, 70), '', cut(plz, 16), cut(ort, 35), 'CH',
+    '', '', '', '', '', '', '',
+    (+amount).toFixed(2), 'CHF',
+    '', '', '', '', '', '', '',
+    'NON', '', cut(message, 140), 'EPD'].join('\r\n');
+}
+async function qrBillHtml(amount, message) {
+  const iban = setv('qr_iban'); if (!iban) return '';
+  try { await loadQR(); } catch (e) { return `<div class="card small muted">${h(e.message)}</div>`; }
+  const qr = window.qrcode(0, 'M');
+  window.qrcode.stringToBytes = window.qrcode.stringToBytesFuncs['UTF-8'];
+  qr.addData(spcPayload({ iban, name: setv('qr_name', CFG.clubName), strasse: setv('qr_strasse'), plz: setv('qr_plz'), ort: setv('qr_ort'), amount, message }), 'Byte');
+  qr.make();
+  const n = qr.getModuleCount(); let d = '';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c},${r}h1v1h-1z`;
+  const s = n * 7 / 46, o = (n - s) / 2, b = s * 0.08, t = s * 0.17, l = s * 0.56;
+  const cross = `<rect x="${o}" y="${o}" width="${s}" height="${s}" fill="#fff"/><rect x="${o + b}" y="${o + b}" width="${s - 2 * b}" height="${s - 2 * b}" fill="#000"/>
+    <rect x="${n / 2 - t / 2}" y="${n / 2 - l / 2}" width="${t}" height="${l}" fill="#fff"/><rect x="${n / 2 - l / 2}" y="${n / 2 - t / 2}" width="${l}" height="${t}" fill="#fff"/>`;
+  const svg = `<svg viewBox="-2 -2 ${n + 4} ${n + 4}" width="190" height="190" shape-rendering="crispEdges" style="background:#fff"><path d="${d}" fill="#000"/>${cross}</svg>`;
+  const ib = iban.replace(/\s/g, '').replace(/(.{4})/g, '$1 ').trim();
+  return `<div class="card qrbill"><b>QR-Rechnung</b><div class="qrwrap">${svg}<div class="small">
+    <div class="k">Konto / Zahlbar an</div>${h(ib)}<br>${h(setv('qr_name', CFG.clubName))}<br>${h(setv('qr_strasse', ''))}<br>${h([setv('qr_plz', ''), setv('qr_ort', '')].join(' ').trim())}
+    <div class="k">Betrag</div>CHF ${(+amount).toFixed(2)}<div class="k">Mitteilung</div>${h(message)}</div></div>
+    <p class="small muted">Mit der Banking-App scannen oder Screenshot machen und in der App einlesen.</p></div>`;
+}
+
 /* ---------- Styles für Filter (ergänzt index.html) ---------- */
 (() => {
   const st = document.createElement('style');
@@ -1237,6 +1576,11 @@ async function sendLinkSheet(m, code) {
   .veto-card{display:block;text-decoration:none;color:inherit;border-left:4px solid var(--no)}
   .cand-card{border-left:4px solid var(--gold)}.abs-card{background:var(--warn-bg)}
   label.row.check{cursor:pointer}
+  .shop-item{display:flex;gap:12px;align-items:flex-start}.shop-item img,.shop-item .noimg{width:84px;height:84px;object-fit:cover;border-radius:10px;flex:none;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:32px}
+  .shop-item .grow{flex:1;min-width:0}.shop-item .price{color:var(--navy);font-weight:700;margin:2px 0 4px}
+  .cart{border:2px solid var(--navy)}
+  .qrbill .qrwrap{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;margin-top:8px}.qrbill .k{font-weight:700;font-size:11px;margin-top:6px;text-transform:uppercase;letter-spacing:.3px}
+  .qrbill svg{border-radius:4px}
   .hello{margin:2px 0 14px}.hello .hi{font-size:22px;font-weight:700;color:var(--navy)}
   .res{max-height:260px;overflow:auto;font-size:13px}
   .ih{border:1px solid var(--gold);background:var(--warn-bg)}.ih ol{margin:10px 0 4px;padding-left:22px}.ih li{margin:3px 0}

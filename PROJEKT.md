@@ -1,6 +1,6 @@
 # AC Thun App – Projektübersicht
 
-Stand: 19.11.2026 · App-Version v1.4
+Stand: 19.11.2026 · App-Version v1.5
 
 Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Claude gedacht: Zu Beginn einer neuen Sitzung einfach sagen
 «Lies https://github.com/schtoni68/AC_Thun/blob/main/PROJEKT.md – wir arbeiten an der AC Thun App weiter».
@@ -24,7 +24,7 @@ Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Cl
 | `index.html` | Grundgerüst, Farben/CSS, lädt supabase-js 2.45.4 (jsDelivr), `config.js`, `app.js` |
 | `config.js` | Supabase-URL, öffentlicher Schlüssel (publishable), `appUrl` |
 | `app.js` | Die ganze App (Hash-Routing `#/…`, Vanilla JS) |
-| `factsheet.html` | Factsheet Präsident (druckbar, nur Admins) – `factsheet.html?e=<event-id>` |
+| `factsheet.html` | Factsheet Präsident (druckbar, nur Admins) – `factsheet.html?e=<event-id>&code=<code>`; meldet sich bei Bedarf selbst mit dem Code an (iPhone: Web-App und Safari haben getrennte Speicher; Drucken über «In Safari öffnen») |
 | `sw.js` | Service Worker: Network-first ohne Browser-Cache, Offline-Fallback, Push vorbereitet |
 | `manifest.webmanifest` | PWA-Manifest – bewusst **ohne** `start_url` (iPhone übernimmt so die Adresse mit `?code=`) |
 | `icons/` | App-Icons und Logo |
@@ -34,7 +34,7 @@ Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Cl
 
 | Tabelle | Zweck |
 |---|---|
-| `members` | Mitglieder und Kandidaten (Name, Adresse, Telefon, E-Mail, Geburtsdatum, Eintritt, Partner, `aktiv` = Zugang zur App, `show_birthday`, `member_no` = memberID von ambassadorclub.net, `auth_user_id`, `status` mitglied/kandidat, `goetti_id`, `kandidat_seit`) |
+| `members` | Mitglieder und Kandidaten (Name, Adresse, Telefon, E-Mail, Geburtsdatum, Eintritt, Partner, `aktiv` = Zugang zur App, `show_birthday`, `member_no` = memberID von ambassadorclub.net, `auth_user_id`, `status` mitglied/kandidat, `goetti_id`, `kandidat_seit`, `teilnahmen_extra` = manuell angerechnete Teilnahmen, `lebenslauf_path`) |
 | `admins` | Wer Admin ist (`member_id`) |
 | `member_secrets` | Persönlicher Login-Code und Kalender-Token pro Mitglied (nur eigenes + Admins lesbar) |
 | `board_roles` | Vorstandsämter (Reihenfolge `sort`) |
@@ -44,9 +44,14 @@ Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Cl
 | `mail_log` | Versandprotokoll (`kind` code = Login-Link, mail = freie E-Mail; `subject`) |
 | `absences` | Abwesenheiten (`von`, `bis`, `grund` Ferien/Krankheit/Militär/Beruflich/Andere, `notiz`) – für alle Mitglieder sichtbar |
 | `veto_rounds` | Veto-Verfahren pro Kandidat (`stufe` 1/2, `deadline`, `status` offen/bestanden/abgelehnt/abgebrochen) |
+| `settings` | Einstellungen (Schlüssel/Wert): `veto2_min_teilnahmen`, `veto_frist_tage`, `mail_reply_to`, `shop_email`, `qr_iban`, `qr_name`, `qr_strasse`, `qr_plz`, `qr_ort` – Admin → Einstellungen |
+| `documents` | Dokumente (Titel, Kategorie, Datei in Storage `dokumente`, `fuer_kandidaten`) |
+| `products` | Shop-Artikel (Preis, Varianten mit Komma, Bild in Storage `shop`, `aktiv`, `sort`) |
+| `orders` | Bestellungen (Nr. fortlaufend, `items` JSON, `total`, `status` neu/bezahlt/geliefert/storniert) – entstehen nur über Edge Function `shop-order` |
 | `veto_votes` | Eingelegte Vetos (`reason`, bei Stufe 2 Pflicht) – nur eigenes + Admins lesbar |
 
 Sicherheit: RLS auf allen Tabellen. Mitglieder lesen alles ausser fremden Codes und fremden Vetos; schreiben nur eigenes Profil, eigene Anmeldungen, eigene Abwesenheiten und eigene Vetos. **Kandidaten** sehen nur sich selbst, ihren Götti und das Programm; sie können sich nur für AC-Thun-Anlässe anmelden. Admins dürfen alles.
+Storage-Buckets: `lebenslauf` (privat, PDF, lesen nur Mitglieder), `dokumente` (privat, lesen gemäss `documents`), `shop` (öffentlich, Produktbilder). Hochladen nur Admins.
 Hilfsfunktionen: `my_member_id()`, `is_admin()`, `is_member()` (aktives Mitglied, kein Kandidat), `my_goetti_id()`, `regenerate_login_code(uuid)`.
 Trigger: Schutz von Admin-Feldern (inkl. status/goetti_id), Veto-Prüfung (Frist, Begründung bei Veto 2), Code automatisch bei neuem Mitglied, Verknüpfung Login ↔ Mitglied per E-Mail, Vorstands-Einträge ↔ Mitglied per Name.
 
@@ -56,25 +61,28 @@ Trigger: Schutz von Admin-Feldern (inkl. status/goetti_id), Veto-Prüfung (Frist
 |---|---|---|
 | `login-code` | Persönlicher Code → Login ohne Passwort/Mail | aus |
 | `ical` | Kalender-Abo pro Mitglied (`?t=<ical_token>`), ✓/✗ je nach Anmeldung; Kandidaten nur AC-Thun-Anlässe | aus |
-| `send-codes` | Login-Link-Serienmail und freie E-Mails an alle/einzelne (`free: true`), nur Admins; Versand per SMTP über info@ac-thun.ch (Infomaniak, Port 465), Antwort-an = Admin | an |
+| `shop-order` | Bestellung prüfen/speichern, Mail an Kassier (Einstellung `shop_email`, sonst Vorstandsamt «Kassier», sonst Antwortadresse) + Bestätigung an Mitglied (mit Zahlungsangaben) | an |
+| `send-codes` | Login-Link-Serienmail und freie E-Mails an alle/einzelne (`free: true`), nur Admins; Versand per SMTP über info@ac-thun.ch (Infomaniak, Port 465), Antwort-an = Einstellung `mail_reply_to` (zurzeit Andreas Popp, Andreas.Popp@martiag.ch) | an |
 
 Secrets für `send-codes` (Supabase → Edge Functions → Secrets): `MAIL_FROM` (info@ac-thun.ch), `SMTP_PASS` (Postfach-Passwort), `MAIL_FROM_NAME`, `APP_URL`; optional `SMTP_HOST` (Standard mail.infomaniak.com), `SMTP_USER` (Standard = MAIL_FROM).
 Quellcode als Kopie im Repo unter `supabase/functions/`.
 Brevo wurde verworfen (Konto am 19.11.2026 vom Anti-Spam-Filter gesperrt) – Secret `BREVO_API_KEY` kann gelöscht werden.
 
-## Funktionen der App (v1.4)
+## Funktionen der App (v1.5)
 
 - Login per persönlichem Link `https://club.ac-thun.ch/?code=XXXX` (Code bleibt in Adresse + Gerät gespeichert), Fallback Login-Link per Mail
 - Startseite: Begrüssung je nach Tageszeit (Guten Morgen/Tag/Abend), Hinweis auf laufende Veto-Verfahren, Hinweis «Zum Home-Bildschirm», «Was steht an?», Geburtstage (−3 bis +7 Tage) mit Gratulieren (WhatsApp/SMS/Mail)
 - Jahresprogramm: Standard nur AC-Thun-Anlässe, Filter Regio / National-Int. / Alle; An-/Abmeldung mit Partner, Gästen, Bemerkung; Abwesende separat statt «keine Antwort»
 - Mitglieder (ohne Titel) + Kandidaten (eigener Abschnitt, gestrichelter Kreis, Götti), Abwesenheits-Hinweis, Detail mit Anrufen/SMS/Mail/Kontakt speichern, Alter
 - Abwesenheiten (Mehr → Meine Abwesenheiten): Von/Bis, Grund, optional automatische Abmeldung bei Anlässen
-- Kandidaten: eigenes Login, sehen nur Programm (AC Thun) und Götti
+- Kandidaten: eigenes Login, sehen nur Programm (AC Thun), Götti und freigegebene Dokumente; Lebenslauf als PDF (Admin lädt hoch, Mitglieder sehen ihn)
+- Shop (Mehr → Shop): Artikel mit Varianten, Warenkorb, Bestellung → Mail an Kassier, Swiss QR-Rechnung in der App (wenn IBAN hinterlegt), «Meine Bestellungen»
+- Dokumente (Mehr → Dokumente): nach Kategorie, Admins laden hoch, optional auch für Kandidaten
 - Veto: Veto 1 (Einladung) und Veto 2 (Aufnahme nach 5–6 Teilnahmen, nur begründet) – Mitglieder legen Veto in der App ein (`#/veto/<id>`), nur Admins sehen wer
 - Vorstand aktuell + Geschichte
 - Geburtstage mit Alter
 - Kalender-Abo (iPhone/Outlook/Google)
-- Admin: Mitglieder, Kandidaten & Veto (Teilnahmen, Veto starten/abschliessen, Aufnahme), E-Mail an alle/Kandidaten/einzelne, Login-Link einzeln senden (E-Mail über App, Mailprogramm, WhatsApp, SMS, Teilen), Excel-Import (ambassadorclub.net), Codes & Links, Serienmail, Anlass erfassen (mit Veranstalter), Clubabend-Serie (Monatslunch 11:45), Vorstand, Factsheet Präsident
+- Admin: Einstellungen (Teilnahmen bis Veto 2, Standard-Frist, Antwortadresse, Shop-Empfänger, QR-Rechnung), Abwesenheiten aller Mitglieder (erfassen/bearbeiten/löschen), Shop verwalten (Artikel, Bilder, Bestellstatus, CSV), Mitglieder, Kandidaten & Veto (Teilnahmen anrechnen, Frist ändern, Veto starten/abschliessen, Aufnahme), E-Mail an alle/Kandidaten/einzelne, Login-Link einzeln senden (E-Mail über App, Mailprogramm, WhatsApp, SMS, Teilen), Excel-Import (ambassadorclub.net), Codes & Links, Serienmail, Anlass erfassen (mit Veranstalter), Clubabend-Serie (Monatslunch 11:45), Vorstand, Factsheet Präsident
 
 ## Offene Punkte / Ideen
 
@@ -86,7 +94,9 @@ Brevo wurde verworfen (Konto am 19.11.2026 vom Anti-Spam-Filter gesperrt) – Se
 - [ ] Termine 2027 ergänzen (Monatsanlässe: Platzhalter «Clubabend» Feb–Dez umbenennen oder löschen; Lunch Juli/August fehlen)
 - [ ] «uh» in alten Anmeldelisten zuordnen
 - [ ] Amtsbeginn der Vorstandsmitglieder prüfen (Platzhalter 28.01.2026)
-- [ ] V2: Shop (Bestellung → Mail an Kassier, QR-Rechnung), Dokumente (Supabase Storage), Push-Nachrichten
+- [ ] Shop: Artikel erfassen, IBAN/Adresse für QR-Rechnung und Kassier unter Einstellungen hinterlegen
+- [ ] Dokumente hochladen (Statuten, Protokolle …)
+- [ ] Push-Nachrichten
 - [ ] Evtl. eigenes Feld «bleibt zum Essen» bei Anlässen
 
 ## Hinweise

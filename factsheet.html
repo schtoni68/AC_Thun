@@ -2,14 +2,15 @@
 <html lang="de-CH">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>Factsheet Präsident – AC Thun</title>
 <link rel="icon" href="icons/icon-192.png">
 <style>
 :root{--navy:#2E3192;--gold:#9A7A41;--ink:#1d1d24;--muted:#6b6b76;--line:#e4e2da;--bg:#f4f3ef;--ok:#2f7d4f;--ok-bg:#e5f3ea;--no:#a63a3a;--no-bg:#f8e7e7;--warn:#fbf3e2}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.bar{position:sticky;top:0;background:var(--navy);color:#fff;padding:10px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;z-index:5}
+.bar{position:sticky;top:0;background:var(--navy);color:#fff;padding:calc(env(safe-area-inset-top) + 10px) 16px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;z-index:5}
 .bar select{flex:1;min-width:200px;padding:8px;border-radius:8px;border:0;font:inherit}
 .bar button,.bar a{background:#fff;color:var(--navy);border:0;border-radius:8px;padding:8px 12px;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}
 .page{max-width:820px;margin:16px auto;background:#fff;padding:28px 32px;box-shadow:0 2px 12px rgba(0,0,0,.06);border-radius:12px}
@@ -40,7 +41,7 @@ th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4p
 </style>
 </head>
 <body>
-<div class="bar"><select id="sel"></select><button onclick="window.print()">Drucken / PDF</button><a href="./#/programm">Zur App</a></div>
+<div class="bar"><a id="back" href="./#/programm">‹ App</a><select id="sel"></select><button id="print">Drucken / PDF</button></div>
 <div id="out"><div class="msg">Laden…</div></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="config.js"></script>
@@ -76,8 +77,36 @@ function anniversaries(members, field, from, to) {
 }
 const round = (n) => n > 0 && (n % 10 === 0 || (n >= 50 && n % 5 === 0));
 
+/* Login wie in der App: persönlicher Code aus der Adresse (?code=) oder vom Gerät.
+   Nötig, weil die iPhone-Web-App und Safari getrennte Speicher haben. */
+const norm = (c) => String(c || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+function getCode() { let c = new URLSearchParams(location.search).get('code'); if (!c) { try { c = localStorage.getItem('ac_code'); } catch { /* */ } } return norm(c); }
+async function loginWithCode(code) {
+  const r = await fetch(CFG.supabaseUrl + '/functions/v1/login-code', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: CFG.supabaseKey }, body: JSON.stringify({ code }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.token_hash) throw new Error(j.error || 'Code ungültig');
+  let { error } = await sb.auth.verifyOtp({ token_hash: j.token_hash, type: 'magiclink' });
+  if (error) ({ error } = await sb.auth.verifyOtp({ token_hash: j.token_hash, type: 'email' }));
+  if (error) throw error;
+}
+const standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+function setupBar() {
+  const code = getCode();
+  document.getElementById('back').href = './' + (code ? '?code=' + code : '') + '#/programm';
+  const pb = document.getElementById('print');
+  // In der iPhone-Web-App (Home-Bildschirm) gibt es kein Drucken → in Safari öffnen, dort Teilen → Drucken
+  if (standalone && /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)) {
+    pb.textContent = 'In Safari öffnen';
+    pb.onclick = () => { const u = new URL(location.href); if (code) u.searchParams.set('code', code); window.open(u.toString(), '_blank'); };
+  } else pb.onclick = () => window.print();
+}
+
 async function main() {
-  const { data: { session } } = await sb.auth.getSession();
+  setupBar();
+  let { data: { session } } = await sb.auth.getSession();
+  if (!session && getCode()) {
+    try { await loginWithCode(getCode()); ({ data: { session } } = await sb.auth.getSession()); } catch (e) { out.innerHTML = `<div class="msg">Anmeldung fehlgeschlagen: ${h(e.message)}</div>`; return; }
+  }
   if (!session) { out.innerHTML = `<div class="msg">Bitte zuerst in der <a href="./">App</a> anmelden.</div>`; return; }
   const adm = await q(sb.rpc('is_admin'));
   if (!adm) { out.innerHTML = `<div class="msg">Das Factsheet ist nur für Vorstand/Admins.</div>`; return; }
@@ -95,7 +124,7 @@ async function main() {
   const want = new URLSearchParams(location.search).get('e');
   const def = want || (club.find((e) => dayKey(e.starts_at) >= today) || club[club.length - 1] || {}).id;
   sel.innerHTML = [...club].reverse().map((e) => `<option value="${e.id}" ${e.id === def ? 'selected' : ''}>${fD(e.starts_at, { day: '2-digit', month: '2-digit', year: 'numeric' })} – ${h(e.title)}</option>`).join('');
-  sel.onchange = () => { history.replaceState(null, '', '?e=' + sel.value); render(sel.value); };
+  sel.onchange = () => { const u = new URL(location.href); u.searchParams.set('e', sel.value); history.replaceState(null, '', u.pathname + u.search); render(sel.value); };
 
   // Kandidaten zählen nicht als Mitglieder (erscheinen aber bei den Angemeldeten)
   const active = members.filter((m) => m.aktiv && m.status !== 'kandidat');
