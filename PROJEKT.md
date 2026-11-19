@@ -1,6 +1,6 @@
 # AC Thun App – Projektübersicht
 
-Stand: 18.11.2026 · App-Version v1.3
+Stand: 19.11.2026 · App-Version v1.4
 
 Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Claude gedacht: Zu Beginn einer neuen Sitzung einfach sagen
 «Lies https://github.com/schtoni68/AC_Thun/blob/main/PROJEKT.md – wir arbeiten an der AC Thun App weiter».
@@ -28,54 +28,65 @@ Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Cl
 | `sw.js` | Service Worker: Network-first ohne Browser-Cache, Offline-Fallback, Push vorbereitet |
 | `manifest.webmanifest` | PWA-Manifest – bewusst **ohne** `start_url` (iPhone übernimmt so die Adresse mit `?code=`) |
 | `icons/` | App-Icons und Logo |
+| `supabase/` | Kopie der Edge Functions (`functions/`) und der SQL-Migrationen (`migrations/`) – nur zur Dokumentation, wird nicht automatisch deployt |
 
 ## Datenbank (Supabase, Schema `public`)
 
 | Tabelle | Zweck |
 |---|---|
-| `members` | Mitglieder (Name, Adresse, Telefon, E-Mail, Geburtsdatum, Eintritt, Partner, `aktiv`, `show_birthday`, `member_no` = memberID von ambassadorclub.net, `auth_user_id`) |
+| `members` | Mitglieder und Kandidaten (Name, Adresse, Telefon, E-Mail, Geburtsdatum, Eintritt, Partner, `aktiv` = Zugang zur App, `show_birthday`, `member_no` = memberID von ambassadorclub.net, `auth_user_id`, `status` mitglied/kandidat, `goetti_id`, `kandidat_seit`) |
 | `admins` | Wer Admin ist (`member_id`) |
 | `member_secrets` | Persönlicher Login-Code und Kalender-Token pro Mitglied (nur eigenes + Admins lesbar) |
 | `board_roles` | Vorstandsämter (Reihenfolge `sort`) |
 | `board_terms` | Amtszeiten mit Von/Bis → Vorstand aktuell + Geschichte. `name_text` für Ehemalige ohne Mitgliedseintrag |
 | `events` | Anlässe. Kategorie über Titel-Präfix: ohne = AC Thun, `Regio:`, `National:`, `International:` |
 | `registrations` | An-/Abmeldungen (`status` an/ab, `with_partner`, `guests`, `comment`) |
-| `mail_log` | Versandprotokoll der Serienmail |
+| `mail_log` | Versandprotokoll (`kind` code = Login-Link, mail = freie E-Mail; `subject`) |
+| `absences` | Abwesenheiten (`von`, `bis`, `grund` Ferien/Krankheit/Militär/Beruflich/Andere, `notiz`) – für alle Mitglieder sichtbar |
+| `veto_rounds` | Veto-Verfahren pro Kandidat (`stufe` 1/2, `deadline`, `status` offen/bestanden/abgelehnt/abgebrochen) |
+| `veto_votes` | Eingelegte Vetos (`reason`, bei Stufe 2 Pflicht) – nur eigenes + Admins lesbar |
 
-Sicherheit: RLS auf allen Tabellen. Mitglieder lesen alles ausser fremden Codes; schreiben nur eigenes Profil und eigene Anmeldungen. Admins dürfen alles.
-Hilfsfunktionen: `my_member_id()`, `is_admin()`, `regenerate_login_code(uuid)`.
-Trigger: Schutz von Admin-Feldern, Code automatisch bei neuem Mitglied, Verknüpfung Login ↔ Mitglied per E-Mail, Vorstands-Einträge ↔ Mitglied per Name.
+Sicherheit: RLS auf allen Tabellen. Mitglieder lesen alles ausser fremden Codes und fremden Vetos; schreiben nur eigenes Profil, eigene Anmeldungen, eigene Abwesenheiten und eigene Vetos. **Kandidaten** sehen nur sich selbst, ihren Götti und das Programm; sie können sich nur für AC-Thun-Anlässe anmelden. Admins dürfen alles.
+Hilfsfunktionen: `my_member_id()`, `is_admin()`, `is_member()` (aktives Mitglied, kein Kandidat), `my_goetti_id()`, `regenerate_login_code(uuid)`.
+Trigger: Schutz von Admin-Feldern (inkl. status/goetti_id), Veto-Prüfung (Frist, Begründung bei Veto 2), Code automatisch bei neuem Mitglied, Verknüpfung Login ↔ Mitglied per E-Mail, Vorstands-Einträge ↔ Mitglied per Name.
 
 ## Edge Functions (Supabase)
 
 | Funktion | Zweck | JWT |
 |---|---|---|
 | `login-code` | Persönlicher Code → Login ohne Passwort/Mail | aus |
-| `ical` | Kalender-Abo pro Mitglied (`?t=<ical_token>`), ✓/✗ je nach Anmeldung | aus |
-| `send-codes` | Serienmail mit persönlichem Link (nur Admins), Versand über Brevo | an |
+| `ical` | Kalender-Abo pro Mitglied (`?t=<ical_token>`), ✓/✗ je nach Anmeldung; Kandidaten nur AC-Thun-Anlässe | aus |
+| `send-codes` | Login-Link-Serienmail und freie E-Mails an alle/einzelne (`free: true`), nur Admins; Versand per SMTP über info@ac-thun.ch (Infomaniak, Port 465), Antwort-an = Admin | an |
 
-Secrets für `send-codes` (Supabase → Edge Functions → Secrets): `BREVO_API_KEY`, `MAIL_FROM`, optional `MAIL_FROM_NAME`, `APP_URL`.
-**Status: noch nicht eingerichtet.**
+Secrets für `send-codes` (Supabase → Edge Functions → Secrets): `MAIL_FROM` (info@ac-thun.ch), `SMTP_PASS` (Postfach-Passwort), `MAIL_FROM_NAME`, `APP_URL`; optional `SMTP_HOST` (Standard mail.infomaniak.com), `SMTP_USER` (Standard = MAIL_FROM).
+Quellcode als Kopie im Repo unter `supabase/functions/`.
+Brevo wurde verworfen (Konto am 19.11.2026 vom Anti-Spam-Filter gesperrt) – Secret `BREVO_API_KEY` kann gelöscht werden.
 
-## Funktionen der App (v1.3)
+## Funktionen der App (v1.4)
 
-- Login per persönlichem Link `…/AC_Thun/?code=XXXX` (Code bleibt in Adresse + Gerät gespeichert), Fallback Login-Link per Mail
-- Startseite: Begrüssung, Hinweis «Zum Home-Bildschirm», «Was steht an?», Geburtstage (−3 bis +7 Tage) mit Gratulieren (WhatsApp/SMS/Mail)
-- Jahresprogramm mit Filter (Alle / AC Thun / Regio / National-Int.), An-/Abmeldung mit Partner, Gästen, Bemerkung
-- Mitglieder (ohne Titel), Detail mit Anrufen/SMS/Mail/Kontakt speichern, Alter
+- Login per persönlichem Link `https://club.ac-thun.ch/?code=XXXX` (Code bleibt in Adresse + Gerät gespeichert), Fallback Login-Link per Mail
+- Startseite: Begrüssung je nach Tageszeit (Guten Morgen/Tag/Abend), Hinweis auf laufende Veto-Verfahren, Hinweis «Zum Home-Bildschirm», «Was steht an?», Geburtstage (−3 bis +7 Tage) mit Gratulieren (WhatsApp/SMS/Mail)
+- Jahresprogramm: Standard nur AC-Thun-Anlässe, Filter Regio / National-Int. / Alle; An-/Abmeldung mit Partner, Gästen, Bemerkung; Abwesende separat statt «keine Antwort»
+- Mitglieder (ohne Titel) + Kandidaten (eigener Abschnitt, gestrichelter Kreis, Götti), Abwesenheits-Hinweis, Detail mit Anrufen/SMS/Mail/Kontakt speichern, Alter
+- Abwesenheiten (Mehr → Meine Abwesenheiten): Von/Bis, Grund, optional automatische Abmeldung bei Anlässen
+- Kandidaten: eigenes Login, sehen nur Programm (AC Thun) und Götti
+- Veto: Veto 1 (Einladung) und Veto 2 (Aufnahme nach 5–6 Teilnahmen, nur begründet) – Mitglieder legen Veto in der App ein (`#/veto/<id>`), nur Admins sehen wer
 - Vorstand aktuell + Geschichte
 - Geburtstage mit Alter
 - Kalender-Abo (iPhone/Outlook/Google)
-- Admin: Mitglieder, Excel-Import (ambassadorclub.net), Codes & Links, Serienmail, Anlass erfassen (mit Veranstalter), Clubabend-Serie (Monatslunch 11:45), Vorstand, Factsheet Präsident
+- Admin: Mitglieder, Kandidaten & Veto (Teilnahmen, Veto starten/abschliessen, Aufnahme), E-Mail an alle/Kandidaten/einzelne, Login-Link einzeln senden (E-Mail über App, Mailprogramm, WhatsApp, SMS, Teilen), Excel-Import (ambassadorclub.net), Codes & Links, Serienmail, Anlass erfassen (mit Veranstalter), Clubabend-Serie (Monatslunch 11:45), Vorstand, Factsheet Präsident
 
 ## Offene Punkte / Ideen
 
-- [ ] Brevo einrichten (Secrets) → Serienmail testen und an alle senden. Voraussetzung: Domain `ac-thun.ch` bei Infomaniak registrieren (Halter: Club, Gratis-Mailadresse z.B. info@ac-thun.ch als Absender) (Absender mit eigener Domain wegen DMARC). Danach: Brevo-Konto, Absender verifizieren, API-Key, *Security → Authorised IPs* deaktivieren, Secrets setzen. Edge Function `send-codes` ist bereits fertig deployed.
-- [ ] Supabase → Authentication → URL Configuration: Site URL = https://club.ac-thun.ch/ (+ Redirect URL https://club.ac-thun.ch/**)
+- [x] Domain `ac-thun.ch` bei Infomaniak, Postfach info@ac-thun.ch
+- [x] Secret `SMTP_PASS` (= Gerätepasswort von info@ac-thun.ch, nicht das Infomaniak-Kontopasswort) → Testmail ok (19.11.2026)
+- [ ] Serienmail an alle senden
+- [ ] Supabase-Projekt aus «MaennerchorThun's Org» in eine eigene AC-Thun-Organisation verschieben
+- [x] Supabase → Authentication → URL Configuration: Site URL = https://club.ac-thun.ch/ (+ Redirect URL https://club.ac-thun.ch/**)
 - [ ] Termine 2027 ergänzen (Monatsanlässe: Platzhalter «Clubabend» Feb–Dez umbenennen oder löschen; Lunch Juli/August fehlen)
 - [ ] «uh» in alten Anmeldelisten zuordnen
 - [ ] Amtsbeginn der Vorstandsmitglieder prüfen (Platzhalter 28.01.2026)
-- [ ] V2: Shop (Bestellung → Mail an Kassier, QR-Rechnung), Dokumente (Supabase Storage), Push-Nachrichten, E-Mail an alle
+- [ ] V2: Shop (Bestellung → Mail an Kassier, QR-Rechnung), Dokumente (Supabase Storage), Push-Nachrichten
 - [ ] Evtl. eigenes Feld «bleibt zum Essen» bei Anlässen
 
 ## Hinweise

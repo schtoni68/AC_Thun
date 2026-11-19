@@ -1,10 +1,11 @@
-/* Ambassador Club Thun – App (v1.3) */
+/* Ambassador Club Thun – App (v1.4) */
 'use strict';
 const CFG = window.AC_CONFIG;
 const sb = supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
 const $app = document.getElementById('app');
-const S = { me: null, admin: false, members: [], byId: {}, roles: [], showPast: false, vorstandTab: 'aktuell', installEvt: null, filter: 'alle' };
-try { S.filter = localStorage.getItem('ac_filter') || 'alle'; } catch { /* */ }
+const S = { me: null, admin: false, cand: false, members: [], byId: {}, roles: [], absences: [], showPast: false, vorstandTab: 'aktuell', installEvt: null, filter: 'club', mailDraft: null };
+// Standard: nur AC-Thun-Anlässe (neuer Schlüssel, damit die alte Einstellung «Alle» nicht übernommen wird)
+try { S.filter = localStorage.getItem('ac_filter2') || 'club'; } catch { /* */ }
 const TZ = 'Europe/Zurich';
 const KINDS = ['Lunch', 'Nachtessen', 'Anlass', 'Ausflug', 'Generalversammlung', 'Vorstand', 'Andere'];
 const DEFAULT_LOC = 'Restaurant Krone, Thun';
@@ -31,7 +32,18 @@ function err(e) { console.error(e); toast('Fehler: ' + (e?.message || e)); }
 async function q(p) { const { data, error } = await p; if (error) throw error; return data; }
 async function copy(text) { try { await navigator.clipboard.writeText(text); toast('Kopiert'); } catch { prompt('Kopieren:', text); } }
 function download(name, text, type) { const b = new Blob([text], { type }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
-const csv = (rows) => '﻿' + rows.map((r) => r.map((c) => '"' + String(c ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
+/* Stunde in Zürich (0–23). Achtung: toLocaleString({hour}) liefert in de-CH «9 Uhr» → darum formatToParts */
+const hourNow = () => +new Intl.DateTimeFormat('de-CH', { timeZone: TZ, hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).find((p) => p.type === 'hour').value;
+const greeting = () => { const hr = hourNow(); return hr < 11 ? 'Guten Morgen' : hr < 18 ? 'Guten Tag' : 'Guten Abend'; };
+const isCand = (m) => m?.status === 'kandidat';
+const isMobile = () => /Android|iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && 'ontouchend' in document);
+/* Abwesenheiten */
+const GRUENDE = ['Ferien', 'Krankheit', 'Militär', 'Beruflich', 'Andere'];
+const absOn = (mid, day) => S.absences.find((a) => a.member_id === mid && a.von <= day && a.bis >= day);
+const absNow = (mid) => absOn(mid, today());
+const absText = (a) => `${a.grund} ${a.von === a.bis ? 'am ' + fDM(a.von) : (a.von > today() ? fDM(a.von) + ' – ' : 'bis ') + fDM(a.bis)}`;
+const absChip = (mid) => { const a = absNow(mid); return a ? `<span class="chip abs">${h(absText(a))}</span>` : ''; };
+const csv = (rows) =>'﻿' + rows.map((r) => r.map((c) => '"' + String(c ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
 
 /* Kategorie eines Anlasses: über Titel-Präfix */
 const CAT = { club: 'AC Thun', regio: 'Regio', nat: 'National / Int.' };
@@ -59,7 +71,8 @@ function shell(title, body, opt = {}) {
     <div><div class="t">${h(title)}</div><div class="s">${h(CFG.clubName)}</div></div>
   </header>
   <main>${body}</main>
-  <nav class="tabs">${t('programm', 'Programm', 'cal')}${t('mitglieder', 'Mitglieder', 'users')}${t('vorstand', 'Vorstand', 'star')}${t('geburtstage', 'Geburtstage', 'cake')}${t('mehr', 'Mehr', 'menu')}</nav>`;
+  <nav class="tabs">${S.cand ? t('programm', 'Programm', 'cal') + t('mehr', 'Mehr', 'menu')
+    : t('programm', 'Programm', 'cal') + t('mitglieder', 'Mitglieder', 'users') + t('vorstand', 'Vorstand', 'star') + t('geburtstage', 'Geburtstage', 'cake') + t('mehr', 'Mehr', 'menu')}</nav>`;
   window.scrollTo(0, 0);
 }
 const loading = () => { const m = $app.querySelector('main'); if (m) m.innerHTML = '<div class="empty">Laden…</div>'; };
@@ -108,15 +121,21 @@ function renderLogin(msg) {
 }
 
 async function loadBase() {
-  const [mid, adm, members, roles] = await Promise.all([
+  const since = new Date(Date.now() - 2 * 864e5).toLocaleDateString('sv-SE', { timeZone: TZ });
+  const [mid, adm, members, roles, absences] = await Promise.all([
     q(sb.rpc('my_member_id')), q(sb.rpc('is_admin')),
     q(sb.from('members').select('*').order('nachname')), q(sb.from('board_roles').select('*').order('sort')),
+    q(sb.from('absences').select('*').gte('bis', since).order('von')),
   ]);
   S.admin = !!adm;
   S.members = members; S.byId = Object.fromEntries(members.map((m) => [m.id, m]));
-  S.roles = roles;
+  S.roles = roles; S.absences = absences;
   S.me = mid ? S.byId[mid] : null;
+  S.cand = isCand(S.me) && !S.admin;
+  if (S.cand) S.filter = 'club';
 }
+const memberList = () => S.members.filter((m) => m.aktiv && !isCand(m));
+const candList = () => S.members.filter((m) => m.aktiv && isCand(m));
 
 function rememberCode(c) {
   try { localStorage.setItem('ac_code', c); } catch { /* */ }
@@ -166,10 +185,13 @@ const routes = [
   [/^mitglieder$/, viewMembers], [/^m\/(.+)$/, viewMember],
   [/^vorstand$/, viewVorstand], [/^geburtstage$/, viewBirthdays],
   [/^mehr$/, viewMore], [/^profil$/, viewProfile], [/^kalender$/, viewCalendar], [/^link$/, viewMyLink], [/^installieren$/, viewInstall], [/^bald\/(.+)$/, viewSoon],
+  [/^abwesenheit$/, () => viewAbsences()], [/^veto\/(.+)$/, viewVeto],
   [/^admin$/, viewAdmin], [/^admin\/mitglieder$/, viewAdminMembers], [/^admin\/m\/(.+)$/, viewAdminMember],
   [/^admin\/event\/(.+)$/, viewAdminEvent], [/^admin\/serie$/, viewAdminSeries], [/^admin\/import$/, viewAdminImport],
   [/^admin\/codes$/, viewAdminCodes], [/^admin\/vorstand$/, viewAdminBoard], [/^admin\/term\/(.+)$/, viewAdminTerm],
+  [/^admin\/kandidaten$/, viewAdminCandidates], [/^admin\/mail(?:\/(.+))?$/, viewAdminMail], [/^admin\/abwesenheit\/(.+)$/, (id) => viewAbsences(id)],
 ];
+const CAND_BLOCKED = /^(mitglieder|m\/|vorstand|geburtstage|veto\/)/;
 async function route() {
   if (!S.me) return;
   const path = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
@@ -177,6 +199,7 @@ async function route() {
     const m = path.match(re);
     if (m) {
       if (path.startsWith('admin') && !S.admin) { location.hash = '#/programm'; return; }
+      if (S.cand && CAND_BLOCKED.test(path)) { location.hash = '#/programm'; return; }
       try { await fn(...m.slice(1)); } catch (e) { err(e); }
       return;
     }
@@ -191,25 +214,30 @@ async function viewProgramm() {
   const since = S.showPast ? new Date(Date.now() - 400 * 864e5).toISOString() : new Date(Date.now() - 6 * 3600e3).toISOString();
   const all = await q(sb.from('events').select('*').gte('starts_at', since).order('starts_at', { ascending: !S.showPast }));
   if (S.showPast) all.splice(0, all.length, ...all.filter((e) => new Date(e.starts_at) < new Date()));
-  const events = S.filter === 'alle' ? all : all.filter((e) => catOf(e) === S.filter);
+  if (S.cand) all.splice(0, all.length, ...all.filter((e) => catOf(e) === 'club'));
+  const inFilter = (e) => S.filter === 'alle' || catOf(e) === S.filter;
+  const events = all.filter(inFilter);
   const ids = events.map((e) => e.id);
   const regs = ids.length ? await q(sb.from('registrations').select('event_id,member_id,status,with_partner,guests').in('event_id', ids)) : [];
   const byEv = {};
   regs.forEach((r) => (byEv[r.event_id] ||= []).push(r));
   const cnt = (c) => all.filter((e) => c === 'alle' || catOf(e) === c).length;
-  const hr = +fmt(new Date().toISOString(), { hour: 'numeric', hour12: false });
-  const gruss = hr < 11 ? 'Guten Morgen' : hr < 17 ? 'Grüezi' : 'Guten Abend';
-  let html = `<div class="hello"><div class="hi">${gruss} ${h(S.me.vorname)}</div></div>`;
+  let html = `<div class="hello"><div class="hi">${greeting()} ${h(S.me.vorname)}</div></div>`;
   if (!S.showPast) html += installHint();
+  if (!S.showPast && S.cand) {
+    const g = S.byId[S.me.goetti_id];
+    html += `<div class="card cand-card"><b>Willkommen als Kandidat</b><div class="small" style="margin-top:4px">Du kannst dich hier für die Anlässe des AC Thun an- und abmelden.${g ? ` Dein Götti ist <b>${h(fullName(g))}</b>${g.mobile || g.tel ? ` – <a href="tel:${h((g.mobile || g.tel).replace(/\s/g, ''))}">${h(g.mobile || g.tel)}</a>` : ''}.` : ''}</div></div>`;
+  }
+  if (!S.showPast && !S.cand) html += await vetoBanner();
   if (!S.showPast) {
-    const soon = all.filter((e) => new Date(e.starts_at) > new Date() && !e.cancelled).slice(0, 3);
+    const soon = all.filter((e) => new Date(e.starts_at) > new Date() && !e.cancelled && inFilter(e)).slice(0, 3);
     const sIds = soon.map((e) => e.id);
     const myRegs = sIds.length ? await q(sb.from('registrations').select('event_id,status').eq('member_id', S.me.id).in('event_id', sIds)) : [];
     html += `<h2 style="margin-top:6px">Was steht an?</h2><div class="list">${soon.map((e) => `<a class="row" href="#/event/${e.id}">
         <div class="date"><div class="d">${fmt(e.starts_at, { day: 'numeric' })}</div><div class="m">${fmt(e.starts_at, { month: 'short' })}</div></div>
         <div class="grow"><b>${h(evTitle(e))}</b><div class="sub">${fmt(e.starts_at, { weekday: 'short' })} ${fTime(e.starts_at)}${e.location ? ' · ' + h(e.location) : ''}</div></div>
         ${catOf(e) !== 'club' ? `<span class="chip blue">${catLabel(e)}</span>` : statusChip(myRegs.find((r) => r.event_id === e.id))}</a>`).join('') || '<div class="row muted">Keine Anlässe erfasst.</div>'}</div>`;
-    const bd = birthdaysAround(-3, 7);
+    const bd = S.cand ? [] : birthdaysAround(-3, 7);
     if (bd.length) html += `<h2>Geburtstage</h2><div class="list">${bd.map((b) => `<div class="row">
         <div class="av gold">🎂</div>
         <div class="grow"><a href="#/m/${b.m.id}" style="color:inherit;text-decoration:none"><b>${h(fullName(b.m))}</b></a>
@@ -218,7 +246,7 @@ async function viewProgramm() {
   }
   html += `<h2>Jahresprogramm</h2>
     <div class="seg"><a href="#" data-past="0" class="${S.showPast ? '' : 'on'}">Kommende</a><a href="#" data-past="1" class="${S.showPast ? 'on' : ''}">Vergangene</a></div>
-    <div class="filt">${[['alle', 'Alle'], ['club', CAT.club], ['regio', CAT.regio], ['nat', CAT.nat]].map(([k, l]) => `<a href="#" data-f="${k}" class="${S.filter === k ? 'on' : ''}">${l} <span>${cnt(k)}</span></a>`).join('')}</div>`;
+    ${S.cand ? '' : `<div class="filt">${[['club', CAT.club], ['regio', CAT.regio], ['nat', CAT.nat], ['alle', 'Alle']].map(([k, l]) => `<a href="#" data-f="${k}" class="${S.filter === k ? 'on' : ''}">${l} <span>${cnt(k)}</span></a>`).join('')}</div>`}`;
   if (S.admin) html += `<div class="btns" style="margin-bottom:12px"><a class="btn sm ghost" href="#/admin/event/neu">+ Anlass</a><a class="btn sm ghost" href="#/admin/serie">+ Clubabend-Serie</a></div>`;
   if (!events.length) html += `<div class="empty">Keine ${S.showPast ? 'vergangenen' : 'kommenden'} Anlässe in dieser Auswahl.</div>`;
   let lastMonth = '';
@@ -236,7 +264,7 @@ async function viewProgramm() {
       <a class="row" href="#/event/${e.id}" style="border:0">
         <div class="date"><div class="d">${fmt(e.starts_at, { day: 'numeric' })}</div><div class="m">${fmt(e.starts_at, { weekday: 'short' })}</div></div>
         <div class="grow"><b>${h(evTitle(e))}</b><div class="sub">${fTime(e.starts_at)} · ${h(e.kind)}${e.location ? ' · ' + h(e.location) : ''}</div>
-          <div style="margin-top:5px">${ext ? `<span class="chip blue">${catLabel(e)}</span> ` : ''}${e.cancelled ? '<span class="chip no">abgesagt</span> ' : ''}${statusChip(mine)} <span class="chip">${persons} Pers.</span></div></div>
+          <div style="margin-top:5px">${ext ? `<span class="chip blue">${catLabel(e)}</span> ` : ''}${e.cancelled ? '<span class="chip no">abgesagt</span> ' : ''}${statusChip(mine)} ${S.cand ? '' : `<span class="chip">${persons} Pers.</span>`}</div></div>
       </a>
       ${closed ? '' : `<div class="btns" style="padding:0 14px 12px">
         <button class="btn sm ${mine?.status === 'an' ? 'ok' : 'ghost'}" data-reg="${e.id}" data-st="an">✓ ${ext ? 'Ich gehe' : 'Anmelden'}</button>
@@ -250,7 +278,7 @@ async function viewProgramm() {
   if (ihb) ihb.onclick = async () => { S.installEvt.prompt(); try { await S.installEvt.userChoice; } catch { /* */ } viewProgramm(); };
   $app.querySelectorAll('[data-gr]').forEach((b) => b.onclick = () => congratulate(S.byId[b.dataset.gr], +b.dataset.age, !!b.dataset.late));
   $app.querySelectorAll('[data-past]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); S.showPast = a.dataset.past === '1'; viewProgramm(); });
-  $app.querySelectorAll('[data-f]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); S.filter = a.dataset.f; try { localStorage.setItem('ac_filter', S.filter); } catch { /* */ } viewProgramm(); });
+  $app.querySelectorAll('[data-f]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); S.filter = a.dataset.f; try { localStorage.setItem('ac_filter2', S.filter); } catch { /* */ } viewProgramm(); });
   $app.querySelectorAll('[data-reg]').forEach((b) => b.onclick = async () => {
     try { await setReg(b.dataset.reg, S.me.id, { status: b.dataset.st }); toast(b.dataset.st === 'an' ? 'Angemeldet' : 'Abgemeldet'); viewProgramm(); } catch (e) { err(e); }
   });
@@ -281,7 +309,7 @@ function birthdaysAround(from, to) {
   const t0 = new Date(today() + 'T12:00:00');
   const out = [];
   for (const m of S.members) {
-    if (!m.aktiv || !m.geburtsdatum || !m.show_birthday) continue;
+    if (!m.aktiv || isCand(m) || !m.geburtsdatum || !m.show_birthday) continue;
     const [y, mo, d] = m.geburtsdatum.split('-').map(Number);
     for (const yr of [t0.getFullYear() - 1, t0.getFullYear(), t0.getFullYear() + 1]) {
       const days = Math.round((new Date(yr, mo - 1, d, 12) - t0) / 864e5);
@@ -327,20 +355,27 @@ async function viewEvent(id) {
   const mine = regs.find((r) => r.member_id === S.me.id);
   const an = regs.filter((r) => r.status === 'an').sort((a, b) => sortName(S.byId[a.member_id] || {}, S.byId[b.member_id] || {}));
   const ab = regs.filter((r) => r.status === 'ab');
-  const active = S.members.filter((m) => m.aktiv);
-  const open = active.filter((m) => !regs.some((r) => r.member_id === m.id));
+  const ext = catOf(e) !== 'club';
+  if (S.cand && ext) return (location.hash = '#/programm');
+  // Kandidaten nehmen nur an AC-Thun-Anlässen teil
+  const active = ext ? memberList() : [...memberList(), ...candList()];
+  const evDay = new Date(e.starts_at).toLocaleDateString('sv-SE', { timeZone: TZ });
+  const noAnswer = active.filter((m) => !regs.some((r) => r.member_id === m.id));
+  const away = noAnswer.filter((m) => absOn(m.id, evDay));
+  const open = noAnswer.filter((m) => !absOn(m.id, evDay));
   const persons = an.reduce((s, r) => s + 1 + (r.with_partner ? 1 : 0) + (r.guests || 0), 0);
   const past = new Date(e.starts_at) < new Date();
   const closed = past || e.cancelled || (e.reg_deadline && new Date(e.reg_deadline) < new Date());
   const full = e.max_participants && persons >= e.max_participants && mine?.status !== 'an';
-  const ext = catOf(e) !== 'club';
+  const candTag = (m) => isCand(m) ? ' <span class="chip cand">Kandidat</span>' : '';
   const nm = (r) => S.byId[r.member_id] ? fullName(S.byId[r.member_id]) : '?';
+  const nmT = (r) => h(nm(r)) + candTag(S.byId[r.member_id]);
   let html = `<div class="hero">
       <div class="small" style="opacity:.8">${ext ? catLabel(e) + ' · ' : ''}${h(e.kind)}</div>
       <div style="font-size:21px;font-weight:700;margin:2px 0 6px">${h(evTitle(e))}</div>
       <div>${fDate(e.starts_at)}, ${fTime(e.starts_at)}${e.ends_at ? '–' + fTime(e.ends_at) : ''} Uhr</div>
       ${e.location ? `<div><a style="color:#fff" target="_blank" rel="noopener" href="https://maps.google.com/?q=${encodeURIComponent(e.location)}">${h(e.location)}</a></div>` : ''}
-      <div style="margin-top:8px">${e.cancelled ? '<span class="chip">ABGESAGT</span> ' : ''}<span class="chip">${persons} Personen angemeldet${e.max_participants ? ' / max. ' + e.max_participants : ''}</span>
+      <div style="margin-top:8px">${e.cancelled ? '<span class="chip">ABGESAGT</span> ' : ''}${S.cand ? '' : `<span class="chip">${persons} Personen angemeldet${e.max_participants ? ' / max. ' + e.max_participants : ''}</span>`}
       ${e.reg_deadline ? ` <span class="chip">Anmeldeschluss ${fmt(e.reg_deadline, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>` : ''}</div>
     </div>`;
   if (S.admin && !ext) html += `<a class="btn p block" href="factsheet.html?e=${e.id}" style="margin-bottom:10px">📋 Factsheet Präsident</a>`;
@@ -355,9 +390,12 @@ async function viewEvent(id) {
       <div class="btns" style="margin-top:12px"><button class="btn ok" id="an" ${full ? 'disabled' : ''}>✓ Anmelden</button><button class="btn no" id="ab">✗ Abmelden</button></div>`;
   }
   html += `</div>`;
-  html += `<h2>Angemeldet (${an.length})</h2><div class="list">${an.map((r) => `<div class="row"><div class="grow">${h(nm(r))}<div class="sub">${[r.with_partner ? '+ Partner/in' : '', r.guests ? '+ ' + r.guests + ' Gast/Gäste' : '', r.comment || ''].filter(Boolean).map(h).join(' · ')}</div></div></div>`).join('') || '<div class="row muted">Noch niemand</div>'}</div>`;
-  html += `<h2>Abgemeldet (${ab.length})</h2><div class="list">${ab.map((r) => `<div class="row"><div class="grow">${h(nm(r))}${r.comment ? `<div class="sub">${h(r.comment)}</div>` : ''}</div></div>`).join('') || '<div class="row muted">–</div>'}</div>`;
-  html += `<details class="card"><summary><b>Noch keine Antwort (${open.length})</b> ›</summary><div class="small" style="margin-top:8px">${open.sort(sortName).map((m) => h(fullName(m))).join(', ') || '–'}</div></details>`;
+  if (!S.cand) {
+    html += `<h2>Angemeldet (${an.length})</h2><div class="list">${an.map((r) => `<div class="row"><div class="grow">${nmT(r)}<div class="sub">${[r.with_partner ? '+ Partner/in' : '', r.guests ? '+ ' + r.guests + ' Gast/Gäste' : '', r.comment || ''].filter(Boolean).map(h).join(' · ')}</div></div></div>`).join('') || '<div class="row muted">Noch niemand</div>'}</div>`;
+    html += `<h2>Abgemeldet (${ab.length})</h2><div class="list">${ab.map((r) => `<div class="row"><div class="grow">${nmT(r)}${r.comment ? `<div class="sub">${h(r.comment)}</div>` : ''}</div></div>`).join('') || '<div class="row muted">–</div>'}</div>`;
+    if (away.length) html += `<h2>Abwesend (${away.length})</h2><div class="list">${away.sort(sortName).map((m) => `<div class="row"><div class="grow">${h(fullName(m))}${candTag(m)}<div class="sub">${h(absText(absOn(m.id, evDay)))}</div></div></div>`).join('')}</div>`;
+    html += `<details class="card"><summary><b>Noch keine Antwort (${open.length})</b> ›</summary><div class="small" style="margin-top:8px">${open.sort(sortName).map((m) => h(fullName(m)) + (isCand(m) ? ' (Kandidat)' : '')).join(', ') || '–'}</div></details>`;
+  }
   if (S.admin) {
     html += `<h2>Admin</h2><div class="btns"><a class="btn" href="#/admin/event/${e.id}">Bearbeiten</a><button class="btn" id="exp">Liste CSV</button></div>
       <details class="card" style="margin-top:10px"><summary><b>Status für Mitglieder setzen</b> ›</summary><table style="margin-top:8px">
@@ -377,6 +415,7 @@ async function viewEvent(id) {
     document.getElementById('exp').onclick = () => {
       const rows = [['Name', 'Status', 'Partner', 'Gäste', 'Bemerkung']];
       regs.forEach((r) => rows.push([nm(r), r.status === 'an' ? 'angemeldet' : 'abgemeldet', r.with_partner ? 'ja' : '', r.guests || '', r.comment || '']));
+      away.forEach((m) => rows.push([fullName(m), 'abwesend', '', '', absText(absOn(m.id, evDay))]));
       open.forEach((m) => rows.push([fullName(m), 'offen', '', '', '']));
       download(`Anmeldungen_${e.starts_at.slice(0, 10)}_${evTitle(e).replace(/\W+/g, '_')}.csv`, csv(rows), 'text/csv');
     };
@@ -393,16 +432,22 @@ async function viewEvent(id) {
 /* ---------- Mitglieder ---------- */
 function viewMembers() {
   shell('Mitglieder', `<div class="search"><input id="s" type="search" placeholder="Suchen (Name, Ort, Beruf…)"></div><div id="ml"></div>`, { tab: 'mitglieder' });
-  const list = S.members.filter((m) => m.aktiv).sort(sortName);
+  const list = memberList().sort(sortName);
+  const cands = candList().sort(sortName);
+  const row = (m) => `
+      <div class="row"><a href="#/m/${m.id}" class="row" style="padding:0;border:0;flex:1;min-width:0">
+        <div class="av ${isCand(m) ? 'cand' : m.ehrenmitglied ? 'gold' : ''}">${h(initials(m))}</div>
+        <div class="grow"><b>${h(m.nachname)}</b> ${h(m.vorname)}${isCand(m) ? ' <span class="chip cand">Kandidat</span>' : ''}
+          <div class="sub">${isCand(m) && S.byId[m.goetti_id] ? 'Götti: ' + h(fullName(S.byId[m.goetti_id])) : h([m.ort, m.beruf].filter(Boolean).join(' · '))}</div>
+          ${absNow(m.id) ? `<div style="margin-top:3px">${absChip(m.id)}</div>` : ''}</div></a>
+        ${m.mobile || m.tel ? `<a class="btn sm ghost" href="tel:${h((m.mobile || m.tel).replace(/\s/g, ''))}" aria-label="Anrufen">${ICON.phone}</a>` : ''}
+      </div>`;
   const draw = () => {
     const t = (document.getElementById('s').value || '').toLowerCase();
-    const f = list.filter((m) => !t || [m.vorname, m.nachname, m.ort, m.beruf, m.firma, m.partner_vorname].join(' ').toLowerCase().includes(t));
-    document.getElementById('ml').innerHTML = `<p class="muted small">${f.length} Mitglieder</p><div class="list">${f.map((m) => `
-      <div class="row"><a href="#/m/${m.id}" class="row" style="padding:0;border:0;flex:1;min-width:0">
-        <div class="av ${m.ehrenmitglied ? 'gold' : ''}">${h(initials(m))}</div>
-        <div class="grow"><b>${h(m.nachname)}</b> ${h(m.vorname)}<div class="sub">${h([m.ort, m.beruf].filter(Boolean).join(' · '))}</div></div></a>
-        ${m.mobile || m.tel ? `<a class="btn sm ghost" href="tel:${h((m.mobile || m.tel).replace(/\s/g, ''))}" aria-label="Anrufen">${ICON.phone}</a>` : ''}
-      </div>`).join('')}</div>`;
+    const hit = (m) => !t || [m.vorname, m.nachname, m.ort, m.beruf, m.firma, m.partner_vorname].join(' ').toLowerCase().includes(t);
+    const f = list.filter(hit), c = cands.filter(hit);
+    document.getElementById('ml').innerHTML = `<p class="muted small">${f.length} Mitglieder${c.length ? ` · ${c.length} Kandidaten` : ''}</p><div class="list">${f.map(row).join('')}</div>
+      ${c.length ? `<h2>Kandidaten</h2><p class="small muted" style="margin-top:-4px">Noch nicht Mitglied – nehmen an den Anlässen des AC Thun teil.</p><div class="list">${c.map(row).join('')}</div>` : ''}`;
   };
   document.getElementById('s').oninput = draw; draw();
 }
@@ -415,9 +460,12 @@ async function viewMember(id) {
   const addr = [m.strasse, [m.plz, m.ort].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   const kv = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
   const tel = (n) => n ? `<a href="tel:${h(n.replace(/\s/g, ''))}">${h(n)}</a>` : '';
-  let html = `<div class="card" style="display:flex;gap:14px;align-items:center"><div class="av ${m.ehrenmitglied ? 'gold' : ''}" style="width:58px;height:58px;font-size:20px">${h(initials(m))}</div>
+  const g = S.byId[m.goetti_id];
+  const myAbs = S.absences.filter((a) => a.member_id === m.id && a.bis >= today());
+  let html = `<div class="card" style="display:flex;gap:14px;align-items:center"><div class="av ${isCand(m) ? 'cand' : m.ehrenmitglied ? 'gold' : ''}" style="width:58px;height:58px;font-size:20px">${h(initials(m))}</div>
      <div><div style="font-size:20px;font-weight:700">${h(fullName(m))}</div><div class="muted">${h([m.beruf, m.firma].filter(Boolean).join(', '))}</div>
-     ${m.ehrenmitglied ? '<span class="chip gold">Ehrenmitglied</span>' : ''}</div></div>
+     ${m.ehrenmitglied ? '<span class="chip gold">Ehrenmitglied</span>' : ''}${isCand(m) ? '<span class="chip cand">Kandidat</span>' : ''}</div></div>
+   ${myAbs.length ? `<div class="card abs-card">${myAbs.map((a) => `<div><b>Abwesend:</b> ${h(a.grund)} ${a.von === a.bis ? fDay(a.von) : fDM(a.von) + ' – ' + fDay(a.bis)}${a.notiz ? ` <span class="muted">(${h(a.notiz)})</span>` : ''}</div>`).join('')}</div>` : ''}
    <div class="btns" style="margin-bottom:10px">
      ${m.mobile || m.tel ? `<a class="btn p" href="tel:${h((m.mobile || m.tel).replace(/\s/g, ''))}">Anrufen</a>` : ''}
      ${m.mobile ? `<a class="btn" href="sms:${h(m.mobile.replace(/\s/g, ''))}">SMS</a>` : ''}
@@ -428,12 +476,14 @@ async function viewMember(id) {
      ${kv('Mobile', tel(m.mobile))}${kv('Telefon', tel(m.tel))}${kv('E-Mail', m.email ? `<a href="mailto:${h(m.email)}">${h(m.email)}</a>` : '')}
      ${kv('Geburtstag', m.show_birthday && m.geburtsdatum ? h(fDM(m.geburtsdatum)) + ` <span class="muted">(${ageOf(m.geburtsdatum)} Jahre)</span>` : '')}
      ${kv('Partner/in', h([m.partner_vorname, m.partner_nachname].filter(Boolean).join(' ')))}
-     ${kv('Im Club seit', h(fDay(m.eintritt)))}${kv('Interessen', h(m.hobbies))}
+     ${isCand(m) ? kv('Götti', g ? `<a href="#/m/${g.id}">${h(fullName(g))}</a>` : '–') + kv('Kandidat seit', h(fDay(m.kandidat_seit))) : kv('Im Club seit', h(fDay(m.eintritt)))}${kv('Interessen', h(m.hobbies))}
    </dl></div>`;
   if (terms.length) html += `<h2>Ämter im Vorstand</h2><div class="list">${terms.map((t) => `<div class="row"><div class="grow">${h(roleName(t.role_id))}<div class="sub">${h(yearRange(t))}</div></div></div>`).join('')}</div>`;
-  if (S.admin) html += `<a class="btn ghost block" href="#/admin/m/${m.id}">Bearbeiten (Admin)</a>`;
+  if (S.admin) html += `<div class="btns" style="margin-bottom:8px"><button class="btn" id="sendlink">Login-Link senden</button>${m.email ? `<a class="btn" href="#/admin/mail/${m.id}">E-Mail über App</a>` : ''}<a class="btn" href="#/admin/abwesenheit/${m.id}">Abwesenheiten</a></div>
+    <a class="btn ghost block" href="#/admin/m/${m.id}">Bearbeiten (Admin)</a>`;
   $app.querySelector('main').innerHTML = html;
   document.getElementById('vcf').onclick = () => download(`${m.vorname}_${m.nachname}.vcf`, vcard(m), 'text/vcard');
+  const sl = document.getElementById('sendlink'); if (sl) sl.onclick = () => sendLinkSheet(m);
 }
 function vcard(m) {
   const e = (s) => String(s || '').replace(/([,;\\])/g, '\\$1');
@@ -474,7 +524,7 @@ async function viewVorstand() {
 /* ---------- Geburtstage ---------- */
 function viewBirthdays() {
   const t0 = new Date(today() + 'T12:00:00');
-  const list = S.members.filter((m) => m.aktiv && m.geburtsdatum && m.show_birthday).map((m) => {
+  const list = memberList().filter((m) => m.geburtsdatum && m.show_birthday).map((m) => {
     const [y, mo, d] = m.geburtsdatum.split('-').map(Number);
     let next = new Date(t0.getFullYear(), mo - 1, d, 12);
     if (next < t0) next = new Date(t0.getFullYear() + 1, mo - 1, d, 12);
@@ -498,11 +548,11 @@ function viewBirthdays() {
 function viewMore() {
   const r = (href, t, s) => `<a class="row" href="${href}"><div class="grow"><b>${t}</b>${s ? `<div class="sub">${s}</div>` : ''}</div><span class="muted">›</span></a>`;
   shell('Mehr', `
-    <div class="card" style="display:flex;gap:12px;align-items:center"><div class="av">${h(initials(S.me))}</div><div><b>${h(fullName(S.me))}</b><div class="muted small">${S.admin ? 'Administrator' : 'Mitglied'}</div></div></div>
-    <div class="list">${r('#/profil', 'Mein Profil', 'Adresse, Telefon, Geburtstag')}${r('#/kalender', 'Kalender abonnieren', 'Jahresprogramm im eigenen Kalender')}${r('#/link', 'Mein persönlicher Login-Link', 'für weitere Geräte')}${r('#/installieren', 'App auf Startbildschirm', 'iPhone & Android')}</div>
-    <h2>Demnächst</h2>
-    <div class="list">${r('#/bald/shop', 'Shop', 'Pins, Aufkleber, AC-Gürtel')}${r('#/bald/dokumente', 'Dokumente', 'Statuten, Protokolle, Downloads')}${r('#/bald/mitteilungen', 'Mitteilungen', 'E-Mail & Push an Mitglieder')}</div>
-    ${S.admin ? `<h2>Verwaltung</h2><div class="list">${r('factsheet.html', 'Factsheet Präsident', 'nächster Clubanlass')}${r('#/admin', 'Admin-Bereich', 'Mitglieder, Codes, Programm, Vorstand')}</div>` : ''}
+    <div class="card" style="display:flex;gap:12px;align-items:center"><div class="av ${isCand(S.me) ? 'cand' : ''}">${h(initials(S.me))}</div><div><b>${h(fullName(S.me))}</b><div class="muted small">${S.admin ? 'Administrator' : isCand(S.me) ? 'Kandidat' : 'Mitglied'}</div></div></div>
+    <div class="list">${r('#/profil', 'Mein Profil', 'Adresse, Telefon, Geburtstag')}${r('#/abwesenheit', 'Meine Abwesenheiten', absNow(S.me.id) ? h(absText(absNow(S.me.id))) : 'Ferien, Krankheit etc. eintragen')}${r('#/kalender', 'Kalender abonnieren', 'Jahresprogramm im eigenen Kalender')}${r('#/link', 'Mein persönlicher Login-Link', 'für weitere Geräte')}${r('#/installieren', 'App auf Startbildschirm', 'iPhone & Android')}</div>
+    ${S.cand ? '' : `<h2>Demnächst</h2>
+    <div class="list">${r('#/bald/shop', 'Shop', 'Pins, Aufkleber, AC-Gürtel')}${r('#/bald/dokumente', 'Dokumente', 'Statuten, Protokolle, Downloads')}</div>`}
+    ${S.admin ? `<h2>Verwaltung</h2><div class="list">${r('factsheet.html', 'Factsheet Präsident', 'nächster Clubanlass')}${r('#/admin/mail', 'E-Mail an Mitglieder', 'an alle oder einzelne')}${r('#/admin/kandidaten', 'Kandidaten & Veto', candList().length + ' Kandidaten')}${r('#/admin', 'Admin-Bereich', 'Mitglieder, Codes, Programm, Vorstand')}</div>` : ''}
     <button class="btn ghost block" id="logout" style="margin-top:10px">Abmelden</button>`, { tab: 'mehr' });
   document.getElementById('logout').onclick = async () => {
     try { localStorage.removeItem('ac_code'); } catch { /* */ }
@@ -569,7 +619,9 @@ function viewAdmin() {
   shell('Admin', `<div class="list">
     ${r('factsheet.html', 'Factsheet Präsident', 'Teilnehmer, Abmeldungen, Geburtstage – druckbar')}
     ${r('#/admin/mitglieder', 'Mitglieder verwalten', 'erfassen, bearbeiten, Admin-Rechte')}
-    ${r('#/admin/codes', 'Persönliche Codes & Links', 'versenden, neu erzeugen, CSV')}
+    ${r('#/admin/kandidaten', 'Kandidaten & Veto', 'Götti, Teilnahmen, Veto 1 und 2, Aufnahme')}
+    ${r('#/admin/mail', 'E-Mail an Mitglieder', 'an alle, Kandidaten oder einzelne')}
+    ${r('#/admin/codes', 'Persönliche Codes & Links', 'per E-Mail, WhatsApp oder SMS senden, neu erzeugen')}
     ${r('#/admin/import', 'Excel-Import', 'Export von ambassadorclub.net einlesen')}
     ${r('#/admin/event/neu', 'Anlass erfassen', 'einzelner Termin')}
     ${r('#/admin/serie', 'Clubabend-Serie', '1. Mi Lunch, 3. Mi Monatsanlass')}
@@ -578,32 +630,48 @@ function viewAdmin() {
 
 function viewAdminMembers() {
   const ms = [...S.members].sort(sortName);
-  shell('Mitglieder verwalten', `<a class="btn p block" href="#/admin/m/neu" style="margin-bottom:12px">+ Neues Mitglied</a>
-    <div class="list">${ms.map((m) => `<a class="row" href="#/admin/m/${m.id}"><div class="av ${m.aktiv ? '' : 'gold'}">${h(initials(m))}</div><div class="grow"><b>${h(m.nachname)}</b> ${h(m.vorname)}<div class="sub">${h(m.email || 'keine E-Mail')}</div></div>${m.aktiv ? '' : '<span class="chip">inaktiv</span>'}${m.auth_user_id ? '<span class="chip ok">aktiv in App</span>' : ''}</a>`).join('')}</div>`, { tab: 'mehr', back: true });
+  const row = (m) => `<a class="row" href="#/admin/m/${m.id}"><div class="av ${!m.aktiv ? 'gold' : isCand(m) ? 'cand' : ''}">${h(initials(m))}</div><div class="grow"><b>${h(m.nachname)}</b> ${h(m.vorname)}<div class="sub">${h(m.email || 'keine E-Mail')}</div></div>${isCand(m) ? '<span class="chip cand">Kandidat</span>' : ''}${m.aktiv ? '' : '<span class="chip">kein Zugang</span>'}${absNow(m.id) ? '<span class="chip abs">abwesend</span>' : ''}${m.auth_user_id ? '<span class="chip ok">in App</span>' : ''}</a>`;
+  shell('Mitglieder verwalten', `<div class="btns" style="margin-bottom:12px"><a class="btn p" href="#/admin/m/neu">+ Neues Mitglied</a><a class="btn" href="#/admin/m/neu-kandidat">+ Neuer Kandidat</a></div>
+    <div class="list">${ms.filter((m) => !isCand(m)).map(row).join('')}</div>
+    ${ms.some(isCand) ? `<h2>Kandidaten</h2><div class="list">${ms.filter(isCand).map(row).join('')}</div>` : ''}`, { tab: 'mehr', back: true });
 }
 
 async function viewAdminMember(id) {
-  const isNew = id === 'neu';
-  const m = isNew ? { aktiv: true, show_birthday: true, land: 'CH' } : S.byId[id];
+  const isNew = id === 'neu' || id === 'neu-kandidat';
+  const m = isNew ? { aktiv: true, show_birthday: true, land: 'CH', status: id === 'neu-kandidat' ? 'kandidat' : 'mitglied', kandidat_seit: id === 'neu-kandidat' ? today() : null } : S.byId[id];
   if (!m) return (location.hash = '#/admin/mitglieder');
   const admins = await q(sb.from('admins').select('member_id'));
   const isAdm = admins.some((a) => a.member_id === id);
-  shell(isNew ? 'Neues Mitglied' : fullName(m), `<div class="card">${fieldsHtml(m, [...PROFILE_FIELDS, ...ADMIN_FIELDS])}
+  const goettis = memberList().filter((x) => x.id !== m.id).sort(sortName);
+  shell(isNew ? (isCand(m) ? 'Neuer Kandidat' : 'Neues Mitglied') : fullName(m), `
+    ${!isNew && isCand(m) ? `<a class="btn p block" href="#/admin/kandidaten" style="margin-bottom:10px">Veto-Verfahren & Teilnahmen ›</a>` : ''}
+    ${!isNew ? `<div class="btns" style="margin-bottom:10px"><button class="btn" id="sendlink">Login-Link senden</button>${m.email ? `<a class="btn" href="#/admin/mail/${m.id}">E-Mail</a>` : ''}<a class="btn" href="#/admin/abwesenheit/${m.id}">Abwesenheiten</a></div>` : ''}
+    <div class="card">
+    <div class="grid2"><div><label>Status</label><select id="f_status"><option value="mitglied" ${!isCand(m) ? 'selected' : ''}>Mitglied</option><option value="kandidat" ${isCand(m) ? 'selected' : ''}>Kandidat</option></select></div>
+      <div id="cand_since"><label>Kandidat seit</label><input id="f_kandidat_seit" type="date" value="${h(m.kandidat_seit || '')}"></div>
+      <div id="cand_goetti" style="grid-column:1/-1"><label>Götti (Pate)</label><select id="f_goetti_id"><option value="">– bitte wählen –</option>${goettis.map((x) => `<option value="${x.id}" ${x.id === m.goetti_id ? 'selected' : ''}>${h(x.nachname + ' ' + x.vorname)}</option>`).join('')}</select></div></div>
+    ${fieldsHtml(m, [...PROFILE_FIELDS, ...ADMIN_FIELDS])}
     <label class="check"><input type="checkbox" id="f_show_birthday" ${m.show_birthday ? 'checked' : ''}> Geburtstag sichtbar</label>
     <label class="check"><input type="checkbox" id="f_ehrenmitglied" ${m.ehrenmitglied ? 'checked' : ''}> Ehrenmitglied</label>
-    <label class="check"><input type="checkbox" id="f_aktiv" ${m.aktiv ? 'checked' : ''}> Aktiv (Zugang zur App)</label>
+    <label class="check"><input type="checkbox" id="f_aktiv" ${m.aktiv ? 'checked' : ''}> Zugang zur App (aktiv) – für Ferien/Krankheit besser «Abwesenheiten» nutzen</label>
     <label class="check"><input type="checkbox" id="f_admin" ${isAdm ? 'checked' : ''}> Administrator</label>
     <button class="btn p block" id="save">Speichern</button>
-    ${isNew ? '' : '<button class="btn ghost block" id="del" style="margin-top:8px;color:var(--no)">Mitglied löschen</button>'}</div>`, { tab: 'mehr', back: true });
+    ${isNew ? '' : '<button class="btn ghost block" id="del" style="margin-top:8px;color:var(--no)">Löschen</button>'}</div>`, { tab: 'mehr', back: true });
+  const syncCand = () => { const c = val('f_status') === 'kandidat'; document.getElementById('cand_since').style.display = c ? '' : 'none'; document.getElementById('cand_goetti').style.display = c ? '' : 'none'; };
+  document.getElementById('f_status').onchange = syncCand; syncCand();
+  const sl = document.getElementById('sendlink'); if (sl) sl.onclick = () => sendLinkSheet(m);
   document.getElementById('save').onclick = async () => {
-    const d = { ...readFields([...PROFILE_FIELDS, ...ADMIN_FIELDS]), show_birthday: val('f_show_birthday'), ehrenmitglied: val('f_ehrenmitglied'), aktiv: val('f_aktiv') };
+    const cand = val('f_status') === 'kandidat';
+    const d = { ...readFields([...PROFILE_FIELDS, ...ADMIN_FIELDS]), show_birthday: val('f_show_birthday'), ehrenmitglied: val('f_ehrenmitglied'), aktiv: val('f_aktiv'),
+      status: cand ? 'kandidat' : 'mitglied', goetti_id: cand ? val('f_goetti_id') : m.goetti_id ?? null, kandidat_seit: cand ? (val('f_kandidat_seit') || today()) : m.kandidat_seit ?? null };
     if (!d.vorname || !d.nachname) return toast('Vor- und Nachname nötig');
+    if (cand && !d.goetti_id && !confirm('Für den Kandidaten ist noch kein Götti gewählt. Trotzdem speichern?')) return;
     try {
       const r = isNew ? await q(sb.from('members').insert(d).select().single()) : await q(sb.from('members').update(d).eq('id', id).select().single());
       const wantAdm = val('f_admin');
       if (wantAdm && !isAdm) await q(sb.from('admins').insert({ member_id: r.id }));
       if (!wantAdm && isAdm) await q(sb.from('admins').delete().eq('member_id', r.id));
-      await loadBase(); toast('Gespeichert'); location.hash = '#/admin/mitglieder';
+      await loadBase(); toast('Gespeichert'); location.hash = cand ? '#/admin/kandidaten' : '#/admin/mitglieder';
     } catch (e) { err(e); }
   };
   const del = document.getElementById('del');
@@ -637,7 +705,6 @@ async function viewAdminCodes() {
   const lastMail = {}; logs.forEach((l) => { if (l.ok) lastMail[l.member_id] = l.sent_at; });
   const ms = S.members.filter((m) => m.aktiv).sort(sortName);
   const link = (m) => `${appBase()}?code=${code[m.id]}`;
-  const mail = (m) => `mailto:${encodeURIComponent(m.email || '')}?subject=${encodeURIComponent('Deine neue AC Thun App')}&body=${encodeURIComponent(`Lieber ${m.vorname}\n\nUnser Club hat eine eigene App: Jahresprogramm mit An-/Abmeldung, Mitgliederliste, Vorstand, Geburtstage und Kalender-Abo.\n\nDein persönlicher Zugang (bitte nicht weitergeben):\n${link(m)}\n\nLink antippen – fertig. Danach im Browser «Zum Home-Bildschirm» wählen, dann ist die App wie jede andere auf dem Handy.\n\nHerzliche Grüsse\n${S.me.vorname}`)}`;
   $app.querySelector('main').innerHTML = `
     ${CFG.appUrl ? '' : '<div class="card" style="background:var(--warn-bg)">Hinweis: In <b>config.js</b> ist noch keine <b>appUrl</b> eingetragen. Die Links zeigen auf die aktuelle Adresse.</div>'}
     <details class="card" id="sm" open><summary><b>✉️ Serienmail: Code an Mitglieder senden</b> ›</summary>
@@ -652,9 +719,11 @@ async function viewAdminCodes() {
       <div id="sm_res"></div>
       <p class="small muted">Ohne E-Mail: ${ms.filter((m) => !m.email).map((m) => h(fullName(m))).join(', ') || '–'} → Link einzeln weitergeben.</p></details>
     <button class="btn block" id="csv" style="margin-bottom:12px">CSV für Serienmail (Name, E-Mail, Link)</button>
-    <div class="list">${ms.map((m) => `<div class="row"><div class="grow"><b>${h(fullName(m))}</b><div class="sub mono">${h(code[m.id] || '–')}${m.auth_user_id ? ' · ✓ eingeloggt' : ''}${lastMail[m.id] ? ' · ✉️ ' + fmt(lastMail[m.id], { day: 'numeric', month: 'numeric' }) : ''}</div></div>
-      <button class="btn sm ghost" data-cp="${m.id}">Link</button>${m.email ? `<a class="btn sm ghost" href="${h(mail(m))}">Mail</a>` : ''}<button class="btn sm ghost" data-new="${m.id}" title="Neuer Code">↻</button></div>`).join('')}</div>`;
+    <p class="small muted">«Senden» öffnet die Auswahl: E-Mail über die App, eigenes Mailprogramm, WhatsApp, SMS oder Teilen.</p>
+    <div class="list">${ms.map((m) => `<div class="row"><div class="grow"><b>${h(fullName(m))}</b>${isCand(m) ? ' <span class="chip cand">Kandidat</span>' : ''}<div class="sub mono">${h(code[m.id] || '–')}${m.auth_user_id ? ' · ✓ eingeloggt' : ''}${lastMail[m.id] ? ' · ✉️ ' + fmt(lastMail[m.id], { day: 'numeric', month: 'numeric' }) : ''}</div></div>
+      <button class="btn sm p" data-send="${m.id}">Senden</button><button class="btn sm ghost" data-cp="${m.id}">Link</button><button class="btn sm ghost" data-new="${m.id}" title="Neuer Code">↻</button></div>`).join('')}</div>`;
   $app.querySelectorAll('[data-cp]').forEach((b) => b.onclick = () => copy(link(S.byId[b.dataset.cp])));
+  $app.querySelectorAll('[data-send]').forEach((b) => b.onclick = () => sendLinkSheet(S.byId[b.dataset.send], code[b.dataset.send]));
   $app.querySelectorAll('[data-new]').forEach((b) => b.onclick = async () => {
     if (!confirm('Neuen Code erzeugen? Der alte Link funktioniert dann nicht mehr (bestehende Logins bleiben).')) return;
     try { await q(sb.rpc('regenerate_login_code', { p_member: b.dataset.new })); viewAdminCodes(); } catch (e) { err(e); }
@@ -669,7 +738,7 @@ async function viewAdminCodes() {
     const { data, error } = await sb.functions.invoke('send-codes', { body });
     let j = data;
     if (error) { try { j = await error.context.json(); } catch { j = { error: error.message }; } }
-    if (j?.error) { res.innerHTML = `<div class="card" style="background:var(--no-bg);color:var(--no)">${h(j.error)}${j.setup ? '<br><br>Einrichtung: Gratis-Konto bei brevo.com, Absender bestätigen, API-Key erstellen und in Supabase unter Edge Functions → Secrets als BREVO_API_KEY und MAIL_FROM eintragen.' : ''}</div>`; return; }
+    if (j?.error) { res.innerHTML = `<div class="card" style="background:var(--no-bg);color:var(--no)">${h(j.error)}${j.setup ? '<br><br>Einrichtung: In Supabase unter Edge Functions → Secrets MAIL_FROM (z.B. info@ac-thun.ch) und SMTP_PASS (Passwort des Postfachs bei Infomaniak) eintragen.' : ''}</div>`; return; }
     res.innerHTML = `<p><b>${j.sent} gesendet</b>${j.failed ? `, <span style="color:var(--no)">${j.failed} Fehler</span>` : ''}${test ? ` (Test an ${h(body.test_to)})` : ''}</p>
       <div class="res">${j.results.filter((r) => !r.ok).map((r) => `<div>✗ ${h(r.name)} – ${h(r.error || '')}</div>`).join('')}</div>`;
     if (!test) setTimeout(viewAdminCodes, 2500);
@@ -852,6 +921,309 @@ async function viewAdminTerm(id) {
   if (del) del.onclick = async () => { if (!confirm('Eintrag löschen?')) return; try { await q(sb.from('board_terms').delete().eq('id', id)); location.hash = '#/admin/vorstand'; } catch (e) { err(e); } };
 }
 
+/* ---------- Kandidaten & Veto ---------- */
+const VETO2_AB = 5; // Veto 2 nach 5–6 Teilnahmen
+/* Teilnahmen an vergangenen, nicht abgesagten AC-Thun-Anlässen pro Person */
+async function participations(ids) {
+  const out = Object.fromEntries(ids.map((i) => [i, []]));
+  if (!ids.length) return out;
+  const regs = await q(sb.from('registrations').select('event_id,member_id').eq('status', 'an').in('member_id', ids));
+  const evIds = [...new Set(regs.map((r) => r.event_id))];
+  const evs = evIds.length ? await q(sb.from('events').select('id,title,starts_at,cancelled').in('id', evIds)) : [];
+  const ok = Object.fromEntries(evs.filter((e) => catOf(e) === 'club' && !e.cancelled && new Date(e.starts_at) < new Date()).map((e) => [e.id, e]));
+  regs.forEach((r) => { if (ok[r.event_id]) out[r.member_id].push(ok[r.event_id]); });
+  Object.values(out).forEach((l) => l.sort((a, b) => a.starts_at.localeCompare(b.starts_at)));
+  return out;
+}
+function candPhase(rounds) {
+  const open = rounds.find((r) => r.status === 'offen');
+  if (open) return { key: 'open', round: open, label: `Veto ${open.stufe} läuft bis ${fmt(open.deadline, { day: 'numeric', month: 'long' })}` };
+  if (rounds.some((r) => r.stufe === 2 && r.status === 'bestanden')) return { key: 'v2ok', label: 'Veto 2 bestanden – bereit zur Aufnahme' };
+  if (rounds.some((r) => r.status === 'abgelehnt')) return { key: 'rejected', label: 'Veto eingegangen – nicht weiterverfolgt' };
+  if (rounds.some((r) => r.stufe === 1 && r.status === 'bestanden')) return { key: 'v1ok', label: 'Veto 1 bestanden – eingeladen' };
+  return { key: 'new', label: 'Veto 1 noch nicht gestartet' };
+}
+const phaseChip = (p) => `<span class="chip ${p.key === 'open' ? 'gold' : p.key === 'rejected' ? 'no' : p.key === 'new' ? '' : 'ok'}">${h(p.label)}</span>`;
+
+function vetoMailDraft(c, r, n) {
+  const g = S.byId[c.goetti_id];
+  const who = [c.beruf, c.firma, c.ort].filter(Boolean).join(', ');
+  const bis = fDate(r.deadline);
+  const link = `{link}#/veto/${r.id}`;
+  const text = r.stufe === 1
+    ? `Lieber {vorname}\n\n${g ? fullName(g) : 'Ein Mitglied'} schlägt ${fullName(c)}${who ? ' (' + who + ')' : ''} als Kandidaten für den Ambassador Club Thun vor.\n\nBist du mit einer Einladung nicht einverstanden, kannst du bis ${bis} in der App ein Veto einlegen:\n${link}\n\nWenn du einverstanden bist, musst du nichts tun. Geht kein Veto ein, wird ${c.vorname} zu unseren Anlässen eingeladen. Dein Veto sehen nur die Admins.\n\nHerzliche Grüsse\n${S.me.vorname}`
+    : `Lieber {vorname}\n\n${fullName(c)} hat als Kandidat an ${n} Anlässen teilgenommen${g ? ' (Götti: ' + fullName(g) + ')' : ''}. Wir möchten ${c.vorname} als Mitglied in den Ambassador Club Thun aufnehmen.\n\nHast du begründete Einwände, kannst du bis ${bis} in der App ein Veto mit Begründung einlegen:\n${link}\n\nWenn du einverstanden bist, musst du nichts tun. Geht kein Veto ein, wird ${c.vorname} als Mitglied aufgenommen. Dein Veto sehen nur die Admins.\n\nHerzliche Grüsse\n${S.me.vorname}`;
+  return { subject: `Veto ${r.stufe}: ${r.stufe === 1 ? 'Kandidat' : 'Aufnahme von'} ${fullName(c)}`, text, who: 'members' };
+}
+
+async function viewAdminCandidates() {
+  shell('Kandidaten & Veto', '', { tab: 'mehr', back: true }); loading();
+  const cands = candList().sort(sortName);
+  const ids = cands.map((c) => c.id);
+  const [rounds, parts] = await Promise.all([ids.length ? q(sb.from('veto_rounds').select('*').in('candidate_id', ids).order('started_at')) : [], participations(ids)]);
+  const openIds = rounds.filter((r) => r.status === 'offen').map((r) => r.id);
+  const votes = openIds.length ? await q(sb.from('veto_votes').select('*').in('round_id', openIds)) : [];
+  let html = `<a class="btn p block" href="#/admin/m/neu-kandidat" style="margin-bottom:10px">+ Neuer Kandidat</a>
+    <details class="card small"><summary><b>Ablauf</b> ›</summary><ol style="margin:8px 0 0;padding-left:20px">
+      <li>Kandidat mit Götti erfassen.</li><li><b>Veto 1</b> starten → alle Mitglieder erhalten eine Mail und können in der App ein Veto einlegen.</li>
+      <li>Kein Veto → «Bestanden» → Kandidat mit seinem Login-Link einladen.</li><li>Nach ${VETO2_AB}–6 Teilnahmen <b>Veto 2</b> starten (Veto nur mit Begründung).</li>
+      <li>Kein Veto → «Bestanden» → «Als Mitglied aufnehmen».</li></ol></details>`;
+  if (!cands.length) html += '<div class="empty">Zurzeit keine Kandidaten.</div>';
+  for (const c of cands) {
+    const rs = rounds.filter((r) => r.candidate_id === c.id);
+    const p = candPhase(rs);
+    const n = parts[c.id].length;
+    const g = S.byId[c.goetti_id];
+    html += `<div class="card"><div style="display:flex;gap:10px;align-items:center"><div class="av cand">${h(initials(c))}</div>
+      <div class="grow" style="flex:1"><a href="#/admin/m/${c.id}" style="color:inherit"><b>${h(fullName(c))}</b></a><div class="small muted">Götti: ${g ? h(fullName(g)) : '<span style="color:var(--no)">fehlt</span>'}${c.kandidat_seit ? ' · seit ' + fDay(c.kandidat_seit) : ''}</div></div></div>
+      <div style="margin:8px 0">${phaseChip(p)} <span class="chip ${n >= VETO2_AB ? 'ok' : ''}">${n} Teilnahme${n === 1 ? '' : 'n'}</span></div>
+      ${n ? `<details class="small"><summary class="muted">Teilnahmen anzeigen ›</summary>${parts[c.id].map((e) => `<div>${fmt(e.starts_at, { day: 'numeric', month: 'short', year: 'numeric' })} – ${h(evTitle(e))}</div>`).join('')}</details>` : ''}`;
+    if (p.key === 'open') {
+      const vs = votes.filter((v) => v.round_id === p.round.id);
+      const expired = new Date(p.round.deadline) < new Date();
+      html += `<div class="card" style="background:var(--bg);margin:10px 0 6px"><b>Veto ${p.round.stufe}</b> · Frist ${fDate(p.round.deadline)} ${expired ? '<span class="chip gold">abgelaufen</span>' : ''}
+        <div style="margin-top:6px">${vs.length ? `<b style="color:var(--no)">${vs.length} Veto${vs.length > 1 ? 's' : ''}:</b>${vs.map((v) => `<div class="small">• ${h(S.byId[v.member_id] ? fullName(S.byId[v.member_id]) : '?')}${v.reason ? ': ' + h(v.reason) : ''}</div>`).join('')}` : '<span class="small muted">Bisher kein Veto eingegangen.</span>'}</div>
+        <div class="btns" style="margin-top:8px"><button class="btn sm ok" data-close="${p.round.id}" data-st="bestanden">Bestanden</button><button class="btn sm no" data-close="${p.round.id}" data-st="abgelehnt">Abgelehnt</button>
+          <button class="btn sm ghost" data-remind="${p.round.id}">Erinnerung</button><button class="btn sm ghost" data-close="${p.round.id}" data-st="abgebrochen">Abbrechen</button></div></div>`;
+    } else if (p.key === 'new') html += `<div class="btns"><button class="btn p sm" data-start="${c.id}" data-stufe="1">Veto 1 starten</button></div>`;
+    else if (p.key === 'v1ok') html += `${n >= VETO2_AB ? `<p class="small" style="color:var(--ok)">${n} Teilnahmen – Veto 2 kann gestartet werden.</p>` : `<p class="small muted">Veto 2 nach ${VETO2_AB}–6 Teilnahmen.</p>`}
+      <div class="btns"><button class="btn sm ${n >= VETO2_AB ? 'p' : ''}" data-start="${c.id}" data-stufe="2">Veto 2 starten</button><button class="btn sm ghost" data-link="${c.id}">Login-Link senden</button></div>`;
+    else if (p.key === 'v2ok') html += `<div class="btns"><button class="btn p sm" data-admit="${c.id}">Als Mitglied aufnehmen</button></div>`;
+    else if (p.key === 'rejected') html += `<div class="btns"><button class="btn sm ghost" data-block="${c.id}">Zugang sperren</button><button class="btn sm ghost" data-start="${c.id}" data-stufe="${rs.some((r) => r.stufe === 1 && r.status === 'bestanden') ? 2 : 1}">Neues Veto starten</button></div>`;
+    const closed = rs.filter((r) => r.status !== 'offen');
+    if (closed.length) html += `<div class="small muted" style="margin-top:8px">${closed.map((r) => `Veto ${r.stufe}: ${h(r.status)} (${fmt(r.closed_at || r.deadline, { day: 'numeric', month: 'numeric', year: '2-digit' })})`).join(' · ')}</div>`;
+    html += `</div>`;
+  }
+  $app.querySelector('main').innerHTML = html;
+  const cById = (id) => S.byId[id];
+  $app.querySelectorAll('[data-start]').forEach((b) => b.onclick = async () => {
+    const c = cById(b.dataset.start); const stufe = +b.dataset.stufe;
+    if (!c.goetti_id && !confirm('Für diesen Kandidaten ist kein Götti erfasst. Trotzdem starten?')) return;
+    const days = prompt(`Veto ${stufe} für ${fullName(c)} starten.\nFrist in Tagen:`, '14'); if (!days) return;
+    const dl = new Date(); dl.setDate(dl.getDate() + Math.max(1, Math.round(+days) || 14)); dl.setHours(23, 59, 0, 0);
+    try {
+      const r = await q(sb.from('veto_rounds').insert({ candidate_id: c.id, stufe, deadline: dl.toISOString(), started_by: S.me.id }).select().single());
+      S.mailDraft = vetoMailDraft(c, r, parts[c.id].length);
+      toast(`Veto ${stufe} gestartet – jetzt die Mail an die Mitglieder senden`); location.hash = '#/admin/mail';
+    } catch (e) { err(e); }
+  });
+  $app.querySelectorAll('[data-remind]').forEach((b) => b.onclick = () => {
+    const r = rounds.find((x) => x.id === b.dataset.remind); const c = cById(r.candidate_id);
+    const d = vetoMailDraft(c, r, parts[c.id].length); d.subject = 'Erinnerung – ' + d.subject;
+    S.mailDraft = d; location.hash = '#/admin/mail';
+  });
+  $app.querySelectorAll('[data-close]').forEach((b) => b.onclick = async () => {
+    const r = rounds.find((x) => x.id === b.dataset.close); const c = cById(r.candidate_id); const st = b.dataset.st;
+    const vs = votes.filter((v) => v.round_id === r.id).length;
+    const msg = st === 'bestanden' ? (vs ? `Es liegen ${vs} Veto(s) vor. Trotzdem als bestanden abschliessen?` : `Veto ${r.stufe} für ${fullName(c)} als bestanden abschliessen?`)
+      : st === 'abgelehnt' ? `Veto ${r.stufe} abschliessen: ${fullName(c)} wird nicht ${r.stufe === 1 ? 'eingeladen' : 'aufgenommen'}?` : 'Verfahren abbrechen (ohne Entscheid)?';
+    if (!confirm(msg)) return;
+    try {
+      await q(sb.from('veto_rounds').update({ status: st, closed_at: new Date().toISOString() }).eq('id', r.id));
+      if (st === 'bestanden' && r.stufe === 1 && confirm(`${c.vorname} ist eingeladen. Jetzt den persönlichen Login-Link senden?`)) { await viewAdminCandidates(); return sendLinkSheet(c); }
+      if (st === 'bestanden' && r.stufe === 2 && confirm(`${fullName(c)} jetzt als Mitglied aufnehmen?`)) return admit(c);
+      viewAdminCandidates();
+    } catch (e) { err(e); }
+  });
+  $app.querySelectorAll('[data-link]').forEach((b) => b.onclick = () => sendLinkSheet(cById(b.dataset.link)));
+  $app.querySelectorAll('[data-admit]').forEach((b) => b.onclick = () => { const c = cById(b.dataset.admit); if (confirm(`${fullName(c)} als Mitglied aufnehmen?`)) admit(c); });
+  $app.querySelectorAll('[data-block]').forEach((b) => b.onclick = async () => {
+    const c = cById(b.dataset.block); if (!confirm(`Zugang von ${fullName(c)} sperren? (Der Eintrag bleibt erhalten.)`)) return;
+    try { await q(sb.from('members').update({ aktiv: false }).eq('id', c.id)); await loadBase(); viewAdminCandidates(); } catch (e) { err(e); }
+  });
+}
+async function admit(c) {
+  try {
+    await q(sb.from('members').update({ status: 'mitglied', eintritt: today() }).eq('id', c.id));
+    await loadBase(); toast(`${fullName(c)} ist jetzt Mitglied 🎉`); location.hash = '#/admin/m/' + c.id;
+  } catch (e) { err(e); }
+}
+
+/* Hinweis auf laufende Veto-Verfahren (Startseite, nur Mitglieder) */
+async function vetoBanner() {
+  let rounds = [];
+  try { rounds = await q(sb.from('veto_rounds').select('*').eq('status', 'offen').gt('deadline', new Date().toISOString()).order('deadline')); } catch { return ''; }
+  rounds = rounds.filter((r) => r.candidate_id !== S.me.id);
+  if (!rounds.length) return '';
+  const mine = await q(sb.from('veto_votes').select('round_id').eq('member_id', S.me.id).in('round_id', rounds.map((r) => r.id)));
+  return rounds.map((r) => {
+    const c = S.byId[r.candidate_id]; const voted = mine.some((v) => v.round_id === r.id);
+    return `<a class="card veto-card" href="#/veto/${r.id}"><div class="small muted" style="text-transform:uppercase;letter-spacing:.4px">Veto ${r.stufe} · Frist bis ${fmt(r.deadline, { day: 'numeric', month: 'long' })}</div>
+      <b>${r.stufe === 1 ? 'Kandidat' : 'Aufnahme'}: ${h(c ? fullName(c) : '?')}</b>
+      <div class="small">${voted ? '✋ Du hast ein Veto eingelegt.' : 'Einverstanden? Dann musst du nichts tun.'} <span class="muted">Details ›</span></div></a>`;
+  }).join('');
+}
+
+async function viewVeto(id) {
+  shell('Veto-Verfahren', '', { tab: 'programm', back: true }); loading();
+  const r = await q(sb.from('veto_rounds').select('*').eq('id', id).maybeSingle());
+  if (!r) { $app.querySelector('main').innerHTML = '<div class="empty">Verfahren nicht gefunden.</div>'; return; }
+  const c = S.byId[r.candidate_id]; const g = c && S.byId[c.goetti_id];
+  const mine = await q(sb.from('veto_votes').select('*').eq('round_id', id).eq('member_id', S.me.id).maybeSingle());
+  const openNow = r.status === 'offen' && new Date(r.deadline) > new Date();
+  const n = r.stufe === 2 && c ? (await participations([c.id]))[c.id].length : null;
+  let html = `<div class="hero"><div class="small" style="opacity:.8">Veto ${r.stufe} · ${r.stufe === 1 ? 'Einladung als Kandidat' : 'Aufnahme als Mitglied'}</div>
+      <div style="font-size:21px;font-weight:700;margin:2px 0 6px">${h(c ? fullName(c) : '?')}</div><div>${h([c?.beruf, c?.firma, c?.ort].filter(Boolean).join(' · '))}</div>
+      <div style="margin-top:8px"><span class="chip">Frist: ${fDate(r.deadline)}</span>${openNow ? '' : ' <span class="chip">abgeschlossen</span>'}</div></div>
+    <div class="card"><dl class="kv">${g ? `<dt>Götti</dt><dd><a href="#/m/${g.id}">${h(fullName(g))}</a></dd>` : ''}${c?.kandidat_seit ? `<dt>Kandidat seit</dt><dd>${fDay(c.kandidat_seit)}</dd>` : ''}${n !== null ? `<dt>Teilnahmen</dt><dd>${n} Anlässe</dd>` : ''}</dl>
+      ${c ? `<a href="#/m/${c.id}" class="small">Profil ansehen ›</a>` : ''}</div>
+    <p class="small muted">${r.stufe === 1 ? 'Geht bis zum Ablauf der Frist kein Veto ein, wird der Kandidat zu unseren Anlässen eingeladen.' : 'Geht bis zum Ablauf der Frist kein begründetes Veto ein, wird der Kandidat als Mitglied aufgenommen.'}</p>`;
+  if (!openNow) html += `<div class="card">Das Verfahren ist abgeschlossen${mine ? ' – du hattest ein Veto eingelegt' : ''}.</div>`;
+  else html += `<div class="card"><b>${mine ? '✋ Du hast ein Veto eingelegt' : 'Veto einlegen'}</b>
+      <p class="small muted">${mine ? 'Du kannst die Begründung ändern oder das Veto zurückziehen.' : 'Bist du einverstanden, musst du nichts tun.'} Dein Veto sehen nur die Admins.</p>
+      <label>Begründung${r.stufe === 2 ? ' (nötig)' : ' (freiwillig)'}</label><textarea id="vt_reason" style="min-height:90px">${h(mine?.reason || '')}</textarea>
+      <div class="btns" style="margin-top:10px"><button class="btn no" id="vt_save">${mine ? 'Begründung speichern' : 'Veto einlegen'}</button>${mine ? '<button class="btn ghost" id="vt_del">Veto zurückziehen</button>' : ''}</div></div>`;
+  $app.querySelector('main').innerHTML = html;
+  const sv = document.getElementById('vt_save');
+  if (sv) sv.onclick = async () => {
+    const reason = val('vt_reason');
+    if (r.stufe === 2 && !reason) return toast('Bei Veto 2 ist eine Begründung nötig');
+    if (!mine && !confirm(`Veto gegen ${c ? fullName(c) : 'den Kandidaten'} einlegen?`)) return;
+    try { await q(sb.from('veto_votes').upsert({ round_id: id, member_id: S.me.id, reason }, { onConflict: 'round_id,member_id' })); toast('Veto gespeichert'); viewVeto(id); } catch (e) { err(e); }
+  };
+  const dl = document.getElementById('vt_del');
+  if (dl) dl.onclick = async () => { if (!confirm('Veto zurückziehen?')) return; try { await q(sb.from('veto_votes').delete().eq('round_id', id).eq('member_id', S.me.id)); toast('Veto zurückgezogen'); viewVeto(id); } catch (e) { err(e); } };
+}
+
+/* ---------- Abwesenheiten ---------- */
+async function viewAbsences(id) {
+  const mid = id || S.me.id; const m = S.byId[mid];
+  if (!m || (mid !== S.me.id && !S.admin)) return (location.hash = '#/mehr');
+  const self = mid === S.me.id;
+  shell(self ? 'Meine Abwesenheiten' : 'Abwesenheiten', '', { tab: 'mehr', back: true }); loading();
+  const list = await q(sb.from('absences').select('*').eq('member_id', mid).order('von', { ascending: false }));
+  const cur = list.filter((a) => a.bis >= today()).reverse(), past = list.filter((a) => a.bis < today()).slice(0, 10);
+  const row = (a) => `<div class="row"><div class="grow"><b>${h(a.grund)}</b> ${a.von === a.bis ? fDay(a.von) : fDM(a.von) + ' – ' + fDay(a.bis)}${a.notiz ? `<div class="sub">${h(a.notiz)}</div>` : ''}</div><button class="btn sm ghost" data-del="${a.id}">Löschen</button></div>`;
+  $app.querySelector('main').innerHTML = `${self ? '' : `<p><b>${h(fullName(m))}</b></p>`}
+    <div class="card"><b>Abwesenheit eintragen</b>
+      <div class="grid2"><div><label>Von</label><input id="ab_von" type="date" value="${today()}"></div><div><label>Bis</label><input id="ab_bis" type="date" value="${today()}"></div>
+        <div><label>Grund</label><select id="ab_grund">${GRUENDE.map((g) => `<option>${g}</option>`).join('')}</select></div><div><label>Notiz (optional)</label><input id="ab_notiz"></div></div>
+      <label class="check"><input type="checkbox" id="ab_auto" checked> Bei Anlässen in dieser Zeit automatisch abmelden</label>
+      <button class="btn p block" id="ab_save">Eintragen</button>
+      <p class="small muted">Während der Abwesenheit erscheinst du bei den Anlässen als «abwesend». Grund und Datum sehen alle Mitglieder.</p></div>
+    <h2>Aktuell & geplant</h2><div class="list">${cur.map(row).join('') || '<div class="row muted">Keine</div>'}</div>
+    ${past.length ? `<h2>Vergangen</h2><div class="list">${past.map(row).join('')}</div>` : ''}`;
+  document.getElementById('ab_von').onchange = () => { if (val('ab_bis') < val('ab_von')) document.getElementById('ab_bis').value = val('ab_von'); };
+  document.getElementById('ab_save').onclick = async () => {
+    const d = { member_id: mid, von: val('ab_von'), bis: val('ab_bis'), grund: val('ab_grund'), notiz: val('ab_notiz') };
+    if (!d.von || !d.bis) return toast('Von und Bis angeben');
+    if (d.bis < d.von) return toast('«Bis» liegt vor «Von»');
+    try {
+      await q(sb.from('absences').insert(d));
+      let n = 0;
+      if (val('ab_auto')) {
+        const from = new Date(d.von + 'T00:00:00').toISOString(), to = new Date(d.bis + 'T23:59:59').toISOString();
+        const evs = (await q(sb.from('events').select('id,title,cancelled').gte('starts_at', from).lte('starts_at', to))).filter((e) => !e.cancelled && (!isCand(m) || catOf(e) === 'club'));
+        const have = evs.length ? await q(sb.from('registrations').select('event_id').eq('member_id', mid).in('event_id', evs.map((e) => e.id))) : [];
+        const neu = evs.filter((e) => !have.some((r) => r.event_id === e.id)).map((e) => ({ event_id: e.id, member_id: mid, status: 'ab', comment: d.grund }));
+        if (neu.length) { await q(sb.from('registrations').insert(neu)); n = neu.length; }
+      }
+      S.absences = await q(sb.from('absences').select('*').gte('bis', new Date(Date.now() - 2 * 864e5).toLocaleDateString('sv-SE', { timeZone: TZ })).order('von'));
+      toast('Eingetragen' + (n ? ` – bei ${n} Anlass${n > 1 ? 'en' : ''} abgemeldet` : '')); viewAbsences(id);
+    } catch (e) { err(e); }
+  };
+  $app.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Abwesenheit löschen? (Abmeldungen bei Anlässen bleiben bestehen.)')) return;
+    try { await q(sb.from('absences').delete().eq('id', b.dataset.del)); S.absences = S.absences.filter((a) => a.id !== b.dataset.del); viewAbsences(id); } catch (e) { err(e); }
+  });
+}
+
+/* ---------- E-Mail an Mitglieder ---------- */
+async function viewAdminMail(preId) {
+  const draft = S.mailDraft || {}; S.mailDraft = null;
+  const act = S.members.filter((m) => m.aktiv).sort(sortName);
+  const wm = act.filter((m) => m.email);
+  const groups = { members: wm.filter((m) => !isCand(m)), all: wm, cand: wm.filter(isCand) };
+  const who0 = preId ? 'pick' : draft.who || 'members';
+  shell('E-Mail an Mitglieder', `<div class="card">
+    <label>Empfänger</label><select id="ml_who">
+      <option value="members" ${who0 === 'members' ? 'selected' : ''}>Alle Mitglieder (${groups.members.length})</option>
+      <option value="all" ${who0 === 'all' ? 'selected' : ''}>Mitglieder und Kandidaten (${groups.all.length})</option>
+      <option value="cand" ${who0 === 'cand' ? 'selected' : ''}>Nur Kandidaten (${groups.cand.length})</option>
+      <option value="pick" ${who0 === 'pick' ? 'selected' : ''}>Einzelne auswählen…</option></select>
+    <div id="ml_pick" style="display:none;margin-top:8px"><input id="ml_s" type="search" placeholder="Suchen…">
+      <div class="list" style="max-height:260px;overflow:auto;margin-top:6px">${wm.map((m) => `<label class="row check" style="margin:0" data-n="${h((m.vorname + ' ' + m.nachname).toLowerCase())}"><input type="checkbox" class="ml_cb" value="${m.id}" ${m.id === preId ? 'checked' : ''}> ${h(fullName(m))}${isCand(m) ? ' <span class="chip cand">Kandidat</span>' : ''}</label>`).join('')}</div></div>
+    <p class="small" id="ml_cnt"></p>
+    <label>Betreff</label><input id="ml_subj" value="${h(draft.subject || '')}">
+    <label>Text</label><textarea id="ml_text" style="min-height:240px">${h(draft.text || `Lieber {vorname}\n\n\n\nHerzliche Grüsse\n${S.me.vorname}`)}</textarea>
+    <p class="small muted">Platzhalter: {vorname} {nachname} {link} (persönlicher Login-Link). Absender ist ${h(CFG.clubName)}; Antworten gehen an ${h(S.me.email || 'dich')}.</p>
+    <div class="btns"><button class="btn" id="ml_test">Testmail an mich</button><button class="btn p" id="ml_go">Senden</button></div>
+    <div id="ml_res"></div>
+    <button class="btn ghost block" id="ml_bcc" style="margin-top:10px">Stattdessen im eigenen Mailprogramm öffnen (BCC)</button>
+    <p class="small muted">Ohne E-Mail-Adresse: ${act.filter((m) => !m.email).map((m) => h(fullName(m))).join(', ') || '–'}</p></div>`, { tab: 'mehr', back: true });
+  const targets = () => { const w = val('ml_who'); return w === 'pick' ? [...document.querySelectorAll('.ml_cb:checked')].map((c) => S.byId[c.value]) : groups[w]; };
+  const upd = () => { document.getElementById('ml_pick').style.display = val('ml_who') === 'pick' ? '' : 'none'; const t = targets(); document.getElementById('ml_cnt').textContent = `${t.length} Empfänger${t.length && t.length <= 5 ? ': ' + t.map(fullName).join(', ') : ''}`; };
+  document.getElementById('ml_who').onchange = upd;
+  document.querySelectorAll('.ml_cb').forEach((c) => c.onchange = upd);
+  document.getElementById('ml_s').oninput = (e) => { const t = e.target.value.toLowerCase(); document.querySelectorAll('#ml_pick [data-n]').forEach((r) => { r.style.display = !t || r.dataset.n.includes(t) ? '' : 'none'; }); };
+  upd();
+  const send = async (test) => {
+    const t = targets(); const subject = val('ml_subj'); const text = document.getElementById('ml_text').value;
+    if (!subject) return toast('Betreff fehlt');
+    if (!t.length) return toast('Keine Empfänger');
+    const body = { free: true, subject, text, member_ids: t.map((m) => m.id) };
+    if (test) { body.test_to = S.me.email || prompt('Testmail an welche Adresse?'); if (!body.test_to) return; }
+    else if (!confirm(`E-Mail an ${t.length} Empfänger senden?`)) return;
+    const res = document.getElementById('ml_res'); res.innerHTML = `<p class="small">Versand läuft… (ca. ${test ? 5 : Math.ceil(t.length * 1.3) + 5} Sekunden)</p>`;
+    const { data, error } = await sb.functions.invoke('send-codes', { body });
+    let j = data;
+    if (error) { try { j = await error.context.json(); } catch { j = { error: error.message }; } }
+    if (j?.error) { res.innerHTML = `<div class="card" style="background:var(--no-bg);color:var(--no)">${h(j.error)}</div>`; return; }
+    res.innerHTML = `<p><b>${j.sent} gesendet</b>${j.failed ? `, <span style="color:var(--no)">${j.failed} Fehler</span>` : ''}${test ? ` (Test an ${h(body.test_to)})` : ''}</p>
+      <div class="res">${j.results.filter((r) => !r.ok).map((r) => `<div>✗ ${h(r.name)} – ${h(r.error || '')}</div>`).join('')}</div>`;
+  };
+  document.getElementById('ml_test').onclick = () => send(true);
+  document.getElementById('ml_go').onclick = () => send(false);
+  document.getElementById('ml_bcc').onclick = () => {
+    const t = targets(); if (!t.length) return toast('Keine Empfänger');
+    const text = document.getElementById('ml_text').value.replace(/Lieber \{vorname\}/g, 'Liebe Mitglieder').replace(/\{vorname\}|\{nachname\}/g, '').replace(/^.*\{link\}.*$\n?/gm, '');
+    location.href = `mailto:?bcc=${t.map((m) => encodeURIComponent(m.email)).join(',')}&subject=${encodeURIComponent(val('ml_subj') || '')}&body=${encodeURIComponent(text)}`;
+  };
+}
+
+/* ---------- Login-Link an einzelne Person senden (E-Mail, WhatsApp, SMS, Teilen) ---------- */
+async function sendLinkSheet(m, code) {
+  if (!m) return;
+  if (!code) { try { code = (await q(sb.from('member_secrets').select('login_code').eq('member_id', m.id).single())).login_code; } catch (e) { return err(e); } }
+  const link = `${appBase()}?code=${code}`;
+  const text = isCand(m)
+    ? `Lieber ${m.vorname}\n\nHerzlich willkommen als Kandidat beim Ambassador Club Thun! In unserer App siehst du das Programm und kannst dich für die Anlässe an- und abmelden.\n\nDein persönlicher Zugang (bitte nicht weitergeben):\n${link}\n\nLink antippen – fertig. Tipp: danach im Browser «Zum Home-Bildschirm» wählen.\n\nHerzliche Grüsse\n${S.me.vorname}`
+    : `Lieber ${m.vorname}\n\nHier ist dein persönlicher Zugang zur App des Ambassador Club Thun (bitte nicht weitergeben):\n${link}\n\nLink antippen – fertig. Tipp: danach im Browser «Zum Home-Bildschirm» wählen, dann ist die App wie jede andere auf dem Handy.\n\nHerzliche Grüsse\n${S.me.vorname}`;
+  const tel = (m.tel || '').replace(/\s/g, '');
+  const mob = m.mobile || (/^(\+417|00417|07)/.test(tel) ? m.tel : '');
+  const subj = 'Dein Zugang zur AC Thun App';
+  const wa = mob ? `<a class="btn ${isMobile() ? 'p' : ''} block" target="_blank" rel="noopener" data-k="wa" href="https://wa.me/${waNumber(mob)}?text=">WhatsApp</a>` : '';
+  const appMail = m.email ? `<button class="btn ${isMobile() && mob ? '' : 'p'} block" id="sl_app">E-Mail über die App senden</button>` : '';
+  const opts = [isMobile() ? wa + appMail : appMail + wa,
+    m.email ? `<a class="btn block" data-k="mail" href="mailto:${h(m.email)}?subject=${encodeURIComponent(subj)}&body=">Eigenes Mailprogramm</a>` : '',
+    mob ? `<a class="btn block" data-k="sms" href="sms:${h(mob.replace(/\s/g, ''))}?&body=">SMS</a>` : '',
+    navigator.share ? '<button class="btn block" id="sl_share">Teilen …</button>' : '',
+    '<button class="btn ghost block" id="sl_copy">Text kopieren</button>'].join('');
+  const ov = document.createElement('div');
+  ov.className = 'ov';
+  ov.innerHTML = `<div class="card sheet"><b>Login-Link an ${h(fullName(m))}</b>
+    <textarea id="sl_txt" style="margin:10px 0;min-height:170px">${h(text)}</textarea>
+    <div style="display:grid;gap:8px">${opts}</div><div id="sl_res" class="small" style="margin-top:6px"></div>
+    <button class="btn ghost block" id="sl_x" style="margin-top:8px">Schliessen</button></div>`;
+  document.body.appendChild(ov);
+  const cur = () => document.getElementById('sl_txt').value;
+  const upd = () => { const t = encodeURIComponent(cur()); ov.querySelectorAll('a[data-k]').forEach((a) => { a.href = a.href.replace(/(text=|body=).*$/, '$1' + t); }); };
+  ov.querySelector('#sl_txt').oninput = upd; upd();
+  ov.onclick = (e) => { if (e.target === ov || e.target.id === 'sl_x') ov.remove(); };
+  ov.querySelector('#sl_copy').onclick = () => copy(cur());
+  const sh = ov.querySelector('#sl_share'); if (sh) sh.onclick = () => navigator.share({ title: 'AC Thun App', text: cur() }).catch(() => {});
+  const am = ov.querySelector('#sl_app');
+  if (am) am.onclick = async () => {
+    const res = ov.querySelector('#sl_res'); am.disabled = true; res.textContent = 'Wird gesendet…';
+    const t = cur(); const hasLink = t.includes(link);
+    const { data, error } = await sb.functions.invoke('send-codes', { body: { subject: subj, text: hasLink ? t.split(link).join('{link}') : t, member_ids: [m.id], free: !hasLink } });
+    let j = data; if (error) { try { j = await error.context.json(); } catch { j = { error: error.message }; } }
+    am.disabled = false;
+    if (j?.error) { res.innerHTML = `<span style="color:var(--no)">${h(j.error)}</span>`; return; }
+    res.innerHTML = j.sent ? `<span style="color:var(--ok)">✓ E-Mail an ${h(m.email)} gesendet</span>` : `<span style="color:var(--no)">${h(j.results?.[0]?.error || 'nicht gesendet')}</span>`;
+  };
+}
+
 /* ---------- Styles für Filter (ergänzt index.html) ---------- */
 (() => {
   const st = document.createElement('style');
@@ -860,6 +1232,11 @@ async function viewAdminTerm(id) {
   .filt a span{color:var(--muted);font-size:12px;margin-left:2px}
   .filt a.on{background:#2E3192;border-color:#2E3192;color:#fff}.filt a.on span{color:#cfd0f5}
   .chip.blue{background:#e6e7f7;color:#2E3192}
+  .chip.cand{background:#f3ead6;color:#7a5b1e}.chip.abs{background:#fde9dc;color:#a24a14}
+  .av.cand{background:var(--card);color:var(--navy);border:2px dashed var(--navy)}
+  .veto-card{display:block;text-decoration:none;color:inherit;border-left:4px solid var(--no)}
+  .cand-card{border-left:4px solid var(--gold)}.abs-card{background:var(--warn-bg)}
+  label.row.check{cursor:pointer}
   .hello{margin:2px 0 14px}.hello .hi{font-size:22px;font-weight:700;color:var(--navy)}
   .res{max-height:260px;overflow:auto;font-size:13px}
   .ih{border:1px solid var(--gold);background:var(--warn-bg)}.ih ol{margin:10px 0 4px;padding-left:22px}.ih li{margin:3px 0}

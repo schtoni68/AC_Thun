@@ -82,11 +82,12 @@ async function main() {
   const adm = await q(sb.rpc('is_admin'));
   if (!adm) { out.innerHTML = `<div class="msg">Das Factsheet ist nur für Vorstand/Admins.</div>`; return; }
 
-  const [events, members, terms, roles] = await Promise.all([
+  const [events, members, terms, roles, absences] = await Promise.all([
     q(sb.from('events').select('*').order('starts_at')),
     q(sb.from('members').select('*')),
     q(sb.from('board_terms').select('*')),
     q(sb.from('board_roles').select('*').order('sort')),
+    q(sb.from('absences').select('*')),
   ]);
   const club = events.filter(isClub);
   const today = dayKey(new Date());
@@ -96,7 +97,8 @@ async function main() {
   sel.innerHTML = [...club].reverse().map((e) => `<option value="${e.id}" ${e.id === def ? 'selected' : ''}>${fD(e.starts_at, { day: '2-digit', month: '2-digit', year: 'numeric' })} – ${h(e.title)}</option>`).join('');
   sel.onchange = () => { history.replaceState(null, '', '?e=' + sel.value); render(sel.value); };
 
-  const active = members.filter((m) => m.aktiv);
+  // Kandidaten zählen nicht als Mitglieder (erscheinen aber bei den Angemeldeten)
+  const active = members.filter((m) => m.aktiv && m.status !== 'kandidat');
   const byId = Object.fromEntries(members.map((m) => [m.id, m]));
   const roleName = Object.fromEntries(roles.map((r) => [r.id, r.name]));
 
@@ -112,10 +114,13 @@ async function main() {
     const nextK = next ? dayKey(next.starts_at) : dayKey(new Date(new Date(ev.starts_at).getTime() + 30 * 864e5));
 
     const boardOf = (mid) => terms.filter((t) => t.member_id === mid && t.start_date <= evDay && (!t.end_date || t.end_date >= evDay)).map((t) => roleName[t.role_id]);
-    const tag = (mid) => boardOf(mid).map((r) => `<span class="chip">${h(r)}</span>`).join('');
+    const tag = (mid) => (byId[mid]?.status === 'kandidat' ? '<span class="chip">Kandidat</span>' : '') + boardOf(mid).map((r) => `<span class="chip">${h(r)}</span>`).join('');
+    const absOf = (mid) => absences.find((a) => a.member_id === mid && a.von <= evDay && a.bis >= evDay);
     const an = regs.filter((r) => r.status === 'an').map((r) => ({ r, m: byId[r.member_id] })).filter((x) => x.m).sort((a, b) => byName(a.m, b.m));
     const ab = regs.filter((r) => r.status === 'ab').map((r) => ({ r, m: byId[r.member_id] })).filter((x) => x.m).sort((a, b) => byName(a.m, b.m));
-    const open = active.filter((m) => !regs.some((r) => r.member_id === m.id)).sort(byName);
+    const noAnswer = active.filter((m) => !regs.some((r) => r.member_id === m.id)).sort(byName);
+    const away = noAnswer.filter((m) => absOf(m.id));
+    const open = noAnswer.filter((m) => !absOf(m.id));
     const partners = an.filter((x) => x.r.with_partner).length;
     const guests = an.reduce((s, x) => s + (x.r.guests || 0), 0);
     const total = an.length + partners + guests;
@@ -152,7 +157,8 @@ async function main() {
         <div><h2>Abgemeldet (${ab.length})</h2>
           ${ab.length ? `<table>${ab.map((x) => `<tr><td>${h(name(x.m))}${tag(x.m.id)}${x.r.comment ? `<div class="muted small">${h(x.r.comment)}</div>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted small">Keine.</p>'}</div>
         <div><h2>Keine Antwort (${open.length})</h2>
-          <p class="small">${open.map((m) => h(name(m)) + (boardOf(m.id).length ? ' <span class="chip">Vorstand</span>' : '')).join(', ') || '–'}</p></div>
+          <p class="small">${open.map((m) => h(name(m)) + (boardOf(m.id).length ? ' <span class="chip">Vorstand</span>' : '')).join(', ') || '–'}</p>
+          ${away.length ? `<h2>Abwesend (${away.length})</h2><p class="small">${away.map((m) => `${h(name(m))} <span class="muted">(${h(absOf(m.id).grund)} bis ${fDM(absOf(m.id).bis)})</span>`).join(', ')}</p>` : ''}</div>
       </div>
 
       <h2>Geburtstage seit dem letzten Anlass (${fDMY(fromK)} – ${fDMY(evDay)})</h2>

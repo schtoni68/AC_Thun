@@ -1,5 +1,5 @@
 // Service Worker: immer zuerst die neueste Version vom Server (ohne Browser-Cache), offline Fallback aus dem Cache
-const CACHE = 'ac-thun-v3';
+const CACHE = 'ac-thun-v4';
 const SHELL = ['./', 'index.html', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/logo.png'];
 
 self.addEventListener('install', (e) => {
