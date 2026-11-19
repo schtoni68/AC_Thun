@@ -52,8 +52,11 @@ Deno.serve(async (req) => {
   if (ids) qm = qm.in('id', ids);
   const { data: members, error } = await qm.order('nachname');
   if (error) return json({ error: error.message }, 500);
+  // Antwortadresse: Einstellung «mail_reply_to» (Admin → Einstellungen), sonst der sendende Admin
+  const { data: rt } = await db.from('settings').select('value').eq('key', 'mail_reply_to').maybeSingle();
   const { data: me } = await db.from('members').select('email, vorname, nachname').eq('id', myId).maybeSingle();
-  const replyTo = me?.email ? { name: `${me.vorname} ${me.nachname}`, address: me.email } : undefined;
+  const replyTo = (typeof rt?.value === 'string' && rt.value.includes('@')) ? rt.value
+    : me?.email ? { name: `${me.vorname} ${me.nachname}`, address: me.email } : undefined;
   const list = testTo ? (members ?? []).filter((m) => m.id === myId).concat(members ?? []).slice(0, 1) : (members ?? []);
 
   const transporter = nodemailer.createTransport({
