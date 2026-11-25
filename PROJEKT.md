@@ -1,6 +1,6 @@
 # AC Thun App – Projektübersicht
 
-Stand: 19.11.2026 · App-Version v1.5
+Stand: 25.11.2026 · App-Version v1.6
 
 Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Claude gedacht: Zu Beginn einer neuen Sitzung einfach sagen
 «Lies https://github.com/schtoni68/AC_Thun/blob/main/PROJEKT.md – wir arbeiten an der AC Thun App weiter».
@@ -36,7 +36,7 @@ Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Cl
 |---|---|
 | `members` | Mitglieder und Kandidaten (Name, Adresse, Telefon, E-Mail, Geburtsdatum, Eintritt, Partner, `aktiv` = Zugang zur App, `show_birthday`, `member_no` = memberID von ambassadorclub.net, `auth_user_id`, `status` mitglied/kandidat, `goetti_id`, `kandidat_seit`, `teilnahmen_extra` = manuell angerechnete Teilnahmen, `lebenslauf_path`) |
 | `admins` | Wer Admin ist (`member_id`) |
-| `member_secrets` | Persönlicher Login-Code und Kalender-Token pro Mitglied (nur eigenes + Admins lesbar) |
+| `member_secrets` | Persönlicher Login-Code, Kalender-Token und Partner-Kalender-Token (`partner_token`) pro Mitglied (nur eigenes + Admins lesbar) |
 | `board_roles` | Vorstandsämter (Reihenfolge `sort`) |
 | `board_terms` | Amtszeiten mit Von/Bis → Vorstand aktuell + Geschichte. `name_text` für Ehemalige ohne Mitgliedseintrag |
 | `events` | Anlässe. Kategorie über Titel-Präfix: ohne = AC Thun, `Regio:`, `National:`, `International:` |
@@ -52,15 +52,15 @@ Diese Datei beschreibt, wie die App aufgebaut ist. Sie ist für dich und für Cl
 
 Sicherheit: RLS auf allen Tabellen. Mitglieder lesen alles ausser fremden Codes und fremden Vetos; schreiben nur eigenes Profil, eigene Anmeldungen, eigene Abwesenheiten und eigene Vetos. **Kandidaten** sehen nur sich selbst, ihren Götti und das Programm; sie können sich nur für AC-Thun-Anlässe anmelden. Admins dürfen alles.
 Storage-Buckets: `lebenslauf` (privat, PDF, lesen nur Mitglieder), `dokumente` (privat, lesen gemäss `documents`), `shop` (öffentlich, Produktbilder). Hochladen nur Admins.
-Hilfsfunktionen: `my_member_id()`, `is_admin()`, `is_member()` (aktives Mitglied, kein Kandidat), `my_goetti_id()`, `regenerate_login_code(uuid)`.
-Trigger: Schutz von Admin-Feldern (inkl. status/goetti_id), Veto-Prüfung (Frist, Begründung bei Veto 2), Code automatisch bei neuem Mitglied, Verknüpfung Login ↔ Mitglied per E-Mail, Vorstands-Einträge ↔ Mitglied per Name.
+Hilfsfunktionen: `my_member_id()`, `is_admin()`, `is_board()` / `is_board_member(uuid)` (aktuelles Vorstandsamt oder Admin; steuert Sichtbarkeit von Anlässen der Art «Vorstand»), `is_member()` (aktives Mitglied, kein Kandidat), `my_goetti_id()`, `regenerate_login_code(uuid)`.
+Trigger: Schutz von Admin-Feldern (inkl. status/goetti_id), Veto-Prüfung (Frist, Begründung bei Veto 2), Code automatisch bei neuem Mitglied, Verknüpfung Login ↔ Mitglied per E-Mail, Vorstands-Einträge ↔ Mitglied per Name. Offene Veto-Verfahren werden automatisch abgebrochen, wenn die Person nicht mehr Kandidat oder inaktiv ist (`members_close_veto`, seit 21.11.2026).
 
 ## Edge Functions (Supabase)
 
 | Funktion | Zweck | JWT |
 |---|---|---|
 | `login-code` | Persönlicher Code → Login ohne Passwort/Mail | aus |
-| `ical` | Kalender-Abo pro Mitglied (`?t=<ical_token>`), ✓/✗ je nach Anmeldung; Kandidaten nur AC-Thun-Anlässe | aus |
+| `ical` | Kalender-Abo pro Mitglied (`?t=<ical_token>`), ✓/✗ je nach Anmeldung; Kandidaten nur AC-Thun-Anlässe; Vorstandssitzungen nur für Vorstand/Admins. Partner-Kalender `?p=<partner_token>`: nur Anlässe mit `allow_partner`, ✓ wenn mit Partner angemeldet | aus |
 | `shop-order` | Bestellung prüfen/speichern, Mail an Kassier (Einstellung `shop_email`, sonst Vorstandsamt «Kassier», sonst Antwortadresse) + Bestätigung an Mitglied (mit Zahlungsangaben) | an |
 | `send-codes` | Login-Link-Serienmail und freie E-Mails an alle/einzelne (`free: true`), nur Admins; Versand per SMTP über info@ac-thun.ch (Infomaniak, Port 465), Antwort-an = Einstellung `mail_reply_to` (zurzeit Andreas Popp, Andreas.Popp@martiag.ch) | an |
 
@@ -68,7 +68,9 @@ Secrets für `send-codes` (Supabase → Edge Functions → Secrets): `MAIL_FROM`
 Quellcode als Kopie im Repo unter `supabase/functions/`.
 Brevo wurde verworfen (Konto am 19.11.2026 vom Anti-Spam-Filter gesperrt) – Secret `BREVO_API_KEY` kann gelöscht werden.
 
-## Funktionen der App (v1.5)
+## Funktionen der App (v1.6)
+
+- v1.6: Anlässe mit Partner (`allow_partner`) rosa markiert («👫 mit Partnerin»); Partner-Kalender zum Teilen (Mehr → Kalender abonnieren); Vorstandssitzungen nur für Vorstand sichtbar, «Keine Antwort» dort nur Vorstand; neuer Anlass standardmässig ohne Partner
 
 - Login per persönlichem Link `https://club.ac-thun.ch/?code=XXXX` (Code bleibt in Adresse + Gerät gespeichert), Fallback Login-Link per Mail
 - Startseite: Begrüssung je nach Tageszeit (Guten Morgen/Tag/Abend), Hinweis auf laufende Veto-Verfahren, Hinweis «Zum Home-Bildschirm», «Was steht an?», Geburtstage (−3 bis +7 Tage) mit Gratulieren (WhatsApp/SMS/Mail)

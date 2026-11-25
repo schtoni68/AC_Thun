@@ -601,13 +601,27 @@ async function viewCalendar() {
   const s = await mySecret();
   const https = `${CFG.supabaseUrl}/functions/v1/ical?t=${s.ical_token}`;
   const webcal = https.replace(/^https:/, 'webcal:');
+  const pHttps = s.partner_token ? `${CFG.supabaseUrl}/functions/v1/ical?p=${s.partner_token}` : '';
   $app.querySelector('main').innerHTML = `<div class="card">
     <p>Abonniere das Jahresprogramm in deinem Kalender. Neue oder geänderte Anlässe erscheinen automatisch; deine An-/Abmeldung wird mit ✓ / ✗ angezeigt.</p>
     <div class="btns"><a class="btn p" href="${h(webcal)}">iPhone / Mac / Outlook</a><a class="btn" target="_blank" rel="noopener" href="https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}">Google Kalender</a></div>
     <label>Abo-Adresse (persönlich, nicht weitergeben)</label><div class="mono card" style="background:var(--bg)">${h(https)}</div>
     <button class="btn block" id="cp">Adresse kopieren</button>
-    <p class="small muted">Outlook (Desktop): Kalender hinzufügen → Aus dem Internet → Adresse einfügen.</p></div>`;
+    <p class="small muted">Outlook (Desktop): Kalender hinzufügen → Aus dem Internet → Adresse einfügen.</p></div>
+    ${s.partner_token ? `<div class="card" style="border:2px solid #f2a7c6"><b>👫 Kalender für deine Partnerin / deinen Partner</b>
+      <p class="small">Enthält nur die Anlässe, zu denen Partnerinnen und Partner eingeladen sind (z.B. Weihnachtsessen, Reise). Ist sie/er bei dir mit angemeldet, steht «✓ angemeldet». Keine Mitgliederdaten.</p>
+      <div class="btns"><button class="btn p" id="pshare">Teilen…</button><a class="btn" id="pwa" target="_blank" rel="noopener">WhatsApp</a><a class="btn" id="pmail">E-Mail</a></div>
+      <label>Abo-Adresse Partner-Kalender</label><div class="mono card" style="background:var(--bg)">${h(pHttps)}</div>
+      <button class="btn block" id="pcp">Adresse kopieren</button></div>` : ''}`;
   document.getElementById('cp').onclick = () => copy(https);
+  if (s.partner_token) {
+    const pWebcal = pHttps.replace(/^https:/, 'webcal:');
+    const msg = `Kalender Ambassador Club Thun – Anlässe mit Partnerin/Partner\n\niPhone/Mac/Outlook (antippen und «Abonnieren»):\n${pWebcal}\n\nGoogle Kalender:\nhttps://calendar.google.com/calendar/r?cid=${encodeURIComponent(pWebcal)}\n\nNeue Anlässe erscheinen automatisch.\n${S.me.vorname}`;
+    document.getElementById('pcp').onclick = () => copy(pHttps);
+    document.getElementById('pwa').href = 'https://wa.me/?text=' + encodeURIComponent(msg);
+    document.getElementById('pmail').href = 'mailto:?subject=' + encodeURIComponent('Kalender AC Thun – Partneranlässe') + '&body=' + encodeURIComponent(msg);
+    document.getElementById('pshare').onclick = async () => { if (navigator.share) { try { await navigator.share({ title: 'Kalender AC Thun – Partneranlässe', text: msg }); } catch { /* abgebrochen */ } } else copy(msg); };
+  }
 }
 async function viewMyLink() {
   shell('Mein Login-Link', '', { tab: 'mehr', back: true }); loading();
