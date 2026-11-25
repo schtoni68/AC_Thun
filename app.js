@@ -1,4 +1,4 @@
-/* Ambassador Club Thun – App (v1.5) */
+/* Ambassador Club Thun – App (v1.6) */
 'use strict';
 const CFG = window.AC_CONFIG;
 const sb = supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
@@ -52,6 +52,7 @@ const CAT = { club: 'AC Thun', regio: 'Regio', nat: 'National / Int.' };
 const catOf = (e) => /^Regio:/i.test(e.title) ? 'regio' : /^(National|International):/i.test(e.title) ? 'nat' : 'club';
 const catLabel = (e) => /^International:/i.test(e.title) ? 'International' : /^National:/i.test(e.title) ? 'National' : /^Regio:/i.test(e.title) ? 'Regio' : '';
 const evTitle = (e) => e.title.replace(/^(Regio|National|International):\s*/i, '');
+const partnerChip = (e) => e.allow_partner ? '<span class="chip partner">👫 mit Partnerin</span>' : '';
 
 const ICON = {
   cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
@@ -241,7 +242,7 @@ async function viewProgramm() {
     const myRegs = sIds.length ? await q(sb.from('registrations').select('event_id,status').eq('member_id', S.me.id).in('event_id', sIds)) : [];
     html += `<h2 style="margin-top:6px">Was steht an?</h2><div class="list">${soon.map((e) => `<a class="row" href="#/event/${e.id}">
         <div class="date"><div class="d">${fmt(e.starts_at, { day: 'numeric' })}</div><div class="m">${fmt(e.starts_at, { month: 'short' })}</div></div>
-        <div class="grow"><b>${h(evTitle(e))}</b><div class="sub">${fmt(e.starts_at, { weekday: 'short' })} ${fTime(e.starts_at)}${e.location ? ' · ' + h(e.location) : ''}</div></div>
+        <div class="grow"><b>${h(evTitle(e))}</b><div class="sub">${fmt(e.starts_at, { weekday: 'short' })} ${fTime(e.starts_at)}${e.location ? ' · ' + h(e.location) : ''}</div>${e.allow_partner ? `<div style="margin-top:4px">${partnerChip(e)}</div>` : ''}</div>
         ${catOf(e) !== 'club' ? `<span class="chip blue">${catLabel(e)}</span>` : statusChip(myRegs.find((r) => r.event_id === e.id))}</a>`).join('') || '<div class="row muted">Keine Anlässe erfasst.</div>'}</div>`;
     const bd = S.cand ? [] : birthdaysAround(-3, 7);
     if (bd.length) html += `<h2>Geburtstage</h2><div class="list">${bd.map((b) => `<div class="row">
@@ -266,11 +267,11 @@ async function viewProgramm() {
     const past = new Date(e.starts_at) < new Date();
     const closed = past || e.cancelled || (e.reg_deadline && new Date(e.reg_deadline) < new Date());
     const ext = catOf(e) !== 'club';
-    html += `<div class="card ev ${e.cancelled ? 'cancel' : ''} ${ext ? 'ext' : ''}" style="padding:0">
+    html += `<div class="card ev ${e.cancelled ? 'cancel' : ''} ${ext ? 'ext' : ''} ${e.allow_partner ? 'partner' : ''}" style="padding:0">
       <a class="row" href="#/event/${e.id}" style="border:0">
         <div class="date"><div class="d">${fmt(e.starts_at, { day: 'numeric' })}</div><div class="m">${fmt(e.starts_at, { weekday: 'short' })}</div></div>
         <div class="grow"><b>${h(evTitle(e))}</b><div class="sub">${fTime(e.starts_at)} · ${h(e.kind)}${e.location ? ' · ' + h(e.location) : ''}</div>
-          <div style="margin-top:5px">${ext ? `<span class="chip blue">${catLabel(e)}</span> ` : ''}${e.cancelled ? '<span class="chip no">abgesagt</span> ' : ''}${statusChip(mine)} ${S.cand ? '' : `<span class="chip">${persons} Pers.</span>`}</div></div>
+          <div style="margin-top:5px">${e.allow_partner ? partnerChip(e) + ' ' : ''}${ext ? `<span class="chip blue">${catLabel(e)}</span> ` : ''}${e.cancelled ? '<span class="chip no">abgesagt</span> ' : ''}${statusChip(mine)} ${S.cand ? '' : `<span class="chip">${persons} Pers.</span>`}</div></div>
       </a>
       ${closed ? '' : `<div class="btns" style="padding:0 14px 12px">
         <button class="btn sm ${mine?.status === 'an' ? 'ok' : 'ghost'}" data-reg="${e.id}" data-st="an">✓ ${ext ? 'Ich gehe' : 'Anmelden'}</button>
@@ -364,7 +365,12 @@ async function viewEvent(id) {
   const ext = catOf(e) !== 'club';
   if (S.cand && ext) return (location.hash = '#/programm');
   // Kandidaten nehmen nur an AC-Thun-Anlässen teil
-  const active = ext ? memberList() : [...memberList(), ...candList()];
+  let active = ext ? memberList() : [...memberList(), ...candList()];
+  if (e.kind === 'Vorstand') {
+    const [bt, ad] = await Promise.all([q(sb.from('board_terms').select('member_id,start_date,end_date')), q(sb.from('admins').select('member_id'))]);
+    const td = today(); const ids = new Set([...bt.filter((t) => t.member_id && t.start_date <= td && (!t.end_date || t.end_date >= td)).map((t) => t.member_id), ...ad.map((a) => a.member_id)]);
+    active = memberList().filter((m) => ids.has(m.id));
+  }
   const evDay = new Date(e.starts_at).toLocaleDateString('sv-SE', { timeZone: TZ });
   const noAnswer = active.filter((m) => !regs.some((r) => r.member_id === m.id));
   const away = noAnswer.filter((m) => absOn(m.id, evDay));
@@ -381,7 +387,7 @@ async function viewEvent(id) {
       <div style="font-size:21px;font-weight:700;margin:2px 0 6px">${h(evTitle(e))}</div>
       <div>${fDate(e.starts_at)}, ${fTime(e.starts_at)}${e.ends_at ? '–' + fTime(e.ends_at) : ''} Uhr</div>
       ${e.location ? `<div><a style="color:#fff" target="_blank" rel="noopener" href="https://maps.google.com/?q=${encodeURIComponent(e.location)}">${h(e.location)}</a></div>` : ''}
-      <div style="margin-top:8px">${e.cancelled ? '<span class="chip">ABGESAGT</span> ' : ''}${S.cand ? '' : `<span class="chip">${persons} Personen angemeldet${e.max_participants ? ' / max. ' + e.max_participants : ''}</span>`}
+      <div style="margin-top:8px">${e.allow_partner ? '<span class="chip partner">👫 Partnerin / Partner willkommen</span> ' : ''}${e.cancelled ? '<span class="chip">ABGESAGT</span> ' : ''}${S.cand ? '' : `<span class="chip">${persons} Personen angemeldet${e.max_participants ? ' / max. ' + e.max_participants : ''}</span>`}
       ${e.reg_deadline ? ` <span class="chip">Anmeldeschluss ${fmt(e.reg_deadline, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>` : ''}</div>
     </div>`;
   if (S.admin && !ext) html += `<a class="btn p block" href="${factsheetUrl(e.id)}" style="margin-bottom:10px">📋 Factsheet Präsident</a>`;
@@ -770,7 +776,7 @@ async function viewAdminCodes() {
 
 async function viewAdminEvent(id) {
   const isNew = id === 'neu';
-  const e = isNew ? { kind: 'Anlass', location: DEFAULT_LOC, allow_partner: true, title: '' } : await q(sb.from('events').select('*').eq('id', id).single());
+  const e = isNew ? { kind: 'Anlass', location: DEFAULT_LOC, allow_partner: false, title: '' } : await q(sb.from('events').select('*').eq('id', id).single());
   const cat = catOf(e);
   const kinds = KINDS.includes(e.kind) ? KINDS : [e.kind, ...KINDS];
   shell(isNew ? 'Neuer Anlass' : 'Anlass bearbeiten', `<div class="card">
@@ -1571,6 +1577,8 @@ async function qrBillHtml(amount, message) {
   .filt a span{color:var(--muted);font-size:12px;margin-left:2px}
   .filt a.on{background:#2E3192;border-color:#2E3192;color:#fff}.filt a.on span{color:#cfd0f5}
   .chip.blue{background:#e6e7f7;color:#2E3192}
+  .chip.partner,.hero .chip.partner{background:#fce4ef;color:#a8285f;font-weight:600}
+  .card.ev.partner{box-shadow:0 0 0 2px #f2a7c6,var(--sh)}
   .chip.cand{background:#f3ead6;color:#7a5b1e}.chip.abs{background:#fde9dc;color:#a24a14}
   .av.cand{background:var(--card);color:var(--navy);border:2px dashed var(--navy)}
   .veto-card{display:block;text-decoration:none;color:inherit;border-left:4px solid var(--no)}
